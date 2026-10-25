@@ -75,7 +75,7 @@ def test_schemas_path_body_enum_and_annotations():
     assert rows['sandbox_get_sandbox']['annotations'] == {
         'readOnlyHint': True, 'destructiveHint': False, 'idempotentHint': True, 'openWorldHint': True}
     assert rows['sandbox_delete_sandbox']['annotations']['destructiveHint'] is True
-    assert rows['sandbox_delete_sandbox']['annotations']['idempotentHint'] is True
+    assert rows['sandbox_delete_sandbox']['annotations']['idempotentHint'] is False
 
 
 @pytest.mark.parametrize('flags,methods,curated', [

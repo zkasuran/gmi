@@ -114,12 +114,54 @@ def eligible(operation):
             and not (operation['service'] == 'iam' and operation['group'] == 'oauth'))
 
 
+IDEMPOTENCY_DESCRIPTION = (
+    'Reuse the same value when retrying this call so GMI can recognise a duplicate. '
+    'If omitted, gmi generates one and returns it in the result metadata.')
+IDEMPOTENCY_RULE = 'idempotency_key must be 8 to 128 characters using only letters, digits, dot, underscore and hyphen.'
+WRITE_RETRY_WARNING = (
+    'The request did not complete and the change may or may not have been made. '
+    'Check the current state with a list or get tool before retrying.')
+RUN_LEFTOVERS_WARNING = (
+    'A failed call may have left a running sandbox or a template. '
+    'Use sandbox_list_sandboxes to check for leftovers.')
+
+
+def accepts_idempotency_key(operation):
+    return any(p['name'].lower() == 'idempotency-key' for p in operation['header_parameters'])
+
+
+def prepare_idempotency_key(arguments):
+    value = arguments.get('idempotency_key', str(uuid4()))
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9._-]{8,128}', value):
+        raise GMIError(IDEMPOTENCY_RULE)
+    return value
+
+
+def retry_hint(kind, idempotency_key=None):
+    if kind == 'read':
+        return 'Network request failed; check connectivity and retry.'
+    hint = WRITE_RETRY_WARNING
+    if idempotency_key:
+        hint += f' To retry safely, call again with idempotency_key set to {idempotency_key}.'
+    return hint
+
+
+def retry_description(kind, has_key=False):
+    if kind == 'read':
+        return ''
+    return (' Pass the same idempotency_key when retrying.' if has_key else
+            ' Not idempotent unless it has an idempotency_key argument: check state before retrying.')
+
+
 def input_schema(operation):
     properties, required = {}, []
     for location in ('path', 'query', 'header'):
         for param in operation[location + '_parameters']:
             name = param['name']
             if location == 'header' and name.lower() == 'idempotency-key':
+                properties['idempotency_key'] = {
+                    'type': 'string', 'minLength': 8, 'maxLength': 128,
+                    'pattern': r'^[A-Za-z0-9._-]+$', 'description': IDEMPOTENCY_DESCRIPTION}
                 continue
             if name in properties:
                 raise ValueError('Ambiguous parameter in manifest: ' + name)
@@ -144,11 +186,12 @@ def generated_tools():
         kind = operation_class(operation)
         description = operation['summary'] + '\n\n' + operation.get('description', '').split('\n\n')[0]
         description += f"\n\nClass: {kind}. {operation['method']} {operation['path']}"
+        description += retry_description(kind, accepts_idempotency_key(operation))
         rows.append({'name': tool_name(operation), 'class': kind, 'service': operation['service'],
                      'curated': False, 'description': description.replace('\u2014', '-').replace('\u2013', '-'),
                      'inputSchema': input_schema(operation),
                      'annotations': {'readOnlyHint': kind == 'read', 'destructiveHint': kind == 'destructive',
-                                     'idempotentHint': operation['method'] in ('GET', 'PUT', 'DELETE'), 'openWorldHint': True}})
+                                     'idempotentHint': kind == 'read', 'openWorldHint': True}})
     names = [row['name'] for row in rows]
     if len(names) != len(set(names)):
         raise ValueError('Duplicate MCP tool names in manifest')
@@ -178,7 +221,7 @@ def curated_tools():
          {'search': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 1000, 'default': 50}}, []),
         ('gmi_chat', 'read', 'inference', 'Send one message using the inference key. Costs tokens despite the read class. Returns reply and usage.',
          {'message': string, 'model': string, 'max_tokens': {'type': 'integer', 'minimum': 1, 'maximum': 1024, 'default': 256}}, ['message']),
-        ('gmi_sandbox_run', 'write', 'sandbox', 'Run a command in billable compute, creating a reusable image template if needed. Always attempts to kill the sandbox, including on failure. Leaves the template for reuse.',
+        ('gmi_sandbox_run', 'write', 'sandbox', 'Run a command in billable compute, creating a reusable image template if needed. Always attempts to kill the sandbox, including on failure. Leaves the template for reuse. ' + RUN_LEFTOVERS_WARNING,
          {'image': string, 'command': command, 'product': string, 'timeout': seconds}, ['image', 'command']),
         ('gmi_sandbox_exec', 'write', 'sandbox', 'Execute a command in an existing sandbox. Connects internally without exposing access tokens. A timed out command may still be running.',
          {'sandbox_id': string, 'command': command, 'timeout': seconds}, ['sandbox_id', 'command']),
@@ -188,7 +231,7 @@ def curated_tools():
          {'sandbox_id': string, 'path': string}, ['sandbox_id', 'path']),
     ]
     return [{'name': name, 'class': kind, 'service': service, 'curated': True,
-             'description': description + f' Class: {kind}; curated.',
+             'description': description + f' Class: {kind}; curated.' + retry_description(kind),
              'inputSchema': {'type': 'object', 'properties': props, 'required': required, 'additionalProperties': False},
              'annotations': {'readOnlyHint': kind == 'read', 'destructiveHint': False,
                              'idempotentHint': name in ('gmi_models', 'gmi_sandbox_get_file'), 'openWorldHint': True}}
@@ -252,7 +295,14 @@ def execute_curated(name, arguments, timeout):
             value = {key: value.get(key) for key in ('stdout', 'stderr', 'exit_code')}
         return client.scrub(value)
     except GMIError as error:
-        raise GMIError(client.scrub(str(error))) from None
+        from .sandbox import SandboxHTTPError
+        message = client.scrub(str(error))
+        if name != 'gmi_sandbox_get_file' and (
+                (isinstance(error, SandboxHTTPError) and error.status >= 500)
+                or 'network request failed' in message.lower()
+                or 'timed out' in message.lower()):
+            message = retry_hint('write')
+        raise GMIError(message) from None
     finally:
         client.close()
 
@@ -332,7 +382,7 @@ def execute_operation(operation, arguments, timeout):
     headers = {p['name']: arguments[p['name']] for p in operation['header_parameters'] if p['name'] in arguments}
     for param in operation['header_parameters']:
         if param['name'].lower() == 'idempotency-key':
-            headers[param['name']] = str(uuid4())
+            headers[param['name']] = prepare_idempotency_key(arguments)
     url, headers = build_request(operation, [arguments[p['name']] for p in operation['path_parameters']], query, headers,
                                  host=test_base(operation['server']))
     with httpx.Client(timeout=timeout, headers={'User-Agent': f'gmi-mcp/{__version__}', **headers}) as client:
@@ -345,6 +395,8 @@ def execute_operation(operation, arguments, timeout):
         hint = ''
         if response.status_code in (401, 403):
             hint = COMPUTE_HINT if operation['service'] in ('sandbox', 'cluster') else ' Set GMI_API_KEY or GMI_TOKEN to a console key with access to this service.'
+        if response.status_code >= 500:
+            hint = retry_hint(operation_class(operation), headers.get('Idempotency-Key'))
         return {'status': response.status_code, 'message': payload, 'hint': hint}, True
     if operation.get('returns_binary'):
         return {'message': 'Binary response omitted; use the gmi CLI to download it.'}, False
@@ -386,12 +438,16 @@ async def run_server(max_output_bytes=65536, timeout=60, **options):
             raise MCPError(code=-32602, message=message)
         secrets = [os.environ[name] for name in ('GMI_API_KEY', 'GMI_COMPUTE_API_KEY',
                    'GMI_SANDBOX_API_KEY', 'GMI_TOKEN') if os.environ.get(name)]
+        idempotency_key = None
         try:
             for service in ('iam', 'sandbox', 'cluster'):
                 key, _, _ = _credential(service, allow_missing=True)
                 if key:
                     secrets.append(key)
-            arguments = params.arguments or {}
+            arguments = dict(params.arguments or {})
+            if not row['curated'] and accepts_idempotency_key(operations[params.name]):
+                idempotency_key = prepare_idempotency_key(arguments)
+                arguments['idempotency_key'] = idempotency_key
             try:
                 jsonschema.validate(arguments, row['inputSchema'])
             except jsonschema.ValidationError as error:
@@ -406,9 +462,14 @@ async def run_server(max_output_bytes=65536, timeout=60, **options):
         except (GMIError, click.ClickException) as error:
             result = hygienic_result({'message': str(error)}, max_output_bytes, True, secrets)
         except httpx.RequestError:
-            result = hygienic_result({'message': 'Network request failed; check connectivity and retry.'}, max_output_bytes, True, secrets)
+            result = hygienic_result({'message': retry_hint(row['class'], idempotency_key)}, max_output_bytes, True, secrets)
         except Exception:
             result = hygienic_result({'message': 'Tool failed; check the request and service response.'}, max_output_bytes, True, secrets)
+        if params.name == 'gmi_sandbox_run' and result['isError']:
+            value = result.get('structuredContent') or {'message': 'Tool failed.'}
+            result = hygienic_result({**value, 'warning': RUN_LEFTOVERS_WARNING}, max_output_bytes, True, secrets)
+        if idempotency_key is not None:
+            result['_meta'] = {'gmi/idempotency_key': redact(idempotency_key, secrets)}
         return types.CallToolResult(**result)
 
     server = Server('gmi', version=__version__, instructions=(
