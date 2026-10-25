@@ -211,11 +211,34 @@ Output copied from `gmi mcp config --client cursor`:
 Add `--allow-write` to `gmi mcp config` to include it in the server arguments.
 
 Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol).
-Claude Code and Cursor not run here.
+Claude Code not run here. For Cursor see [Cursor check](#cursor-check).
 
 Documentation references: [Codex](https://developers.openai.com/codex/mcp/),
 [Claude Code](https://code.claude.com/docs/en/mcp) and
 [Cursor](https://cursor.com/docs/context/mcp).
+
+## Cursor check
+
+Checked on 25 October 2026 on Windows 10 with Python 3.11.5, gmi 1.0.0 with
+the `mcp` extra and Cursor 3.7.19, using the block from
+`gmi mcp config --client cursor` as printed.
+
+The block matches what Cursor documents for stdio servers: `type`, `command`,
+`args` and `env`, with `${env:NAME}` resolved in `env` values. `gmi mcp tools`
+gave the counts in the table above. The server launched by the block's command
+was driven over stdio with the official SDK client (`mcp==2.3.0`): protocol
+2026-07-28, 36 tools, no write tools and protocol messages only on stdout.
+`gmi_models` without a key returned
+`Missing API key; run gmi auth login or set GMI_API_KEY.` No key was available
+on the test machine, so no live model list was fetched.
+
+Still open: the tool list inside Cursor and a `gmi_models` call from the Cursor
+agent. Cursor 3.7.19 on the test machine did not start its MCP host for any
+configured server, so this step could not be completed there. No fix is needed
+in gmi. Repeat the Cursor steps on an install that connects to any stdio
+server, with `GMI_API_KEY` set where Cursor runs. On Windows, `gmi` must be on
+the `PATH` of the Cursor process or `command` must hold the full path to
+`gmi.exe`.
 
 ## Verification and limitations
 
@@ -225,9 +248,9 @@ with a local HTTP fixture. They exercise both 2026-07-28 and the older
 redaction, truncation, file limits, cleanup and protocol-only stdout.
 
 Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol).
-Claude Code and Cursor not run here. No live MCP calls were made during this
-build. Other MCP calls against GMI remain unverified. Existing CLI sandbox
-live checks do not establish MCP verification.
+Claude Code not run here. For Cursor see [Cursor check](#cursor-check). No
+live MCP calls were made during this build. Other MCP calls against GMI remain
+unverified. Existing CLI sandbox live checks do not establish MCP verification.
 
 Streamable HTTP transport is not implemented. This server supports stdio only.
 MCP resources and prompts are not implemented. `gmi mcp login` is outside this
