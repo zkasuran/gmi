@@ -760,6 +760,8 @@ The key is resolved as `--api-key`, then `GMI_API_KEY`, then the saved config.
 | A long pause after you send a message | Reasoning models can think for a while before the first visible word. The spinner says "Waiting for reply". `Ctrl+C` stops it. |
 | `Interactive sessions require a terminal` | You ran `gmi` with no terminal attached. Give it a prompt or use `--json`. |
 
+More fixes, including sandbox and MCP errors: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
 Platforms: developed and tested on Linux. macOS and Windows have not been tested.
 
 </details>
