@@ -63,3 +63,37 @@ With the one-line installer, add `--mcp` (or set `GMI_INSTALL_MCP=1`):
 ```sh
 curl -fsSL https://raw.githubusercontent.com/zkasuran/gmi/main/install.sh | sh -s -- --mcp
 ```
+
+## `error: externally-managed-environment` on Debian or Ubuntu
+
+**You see:** pip refuses to install with `error: externally-managed-environment`.
+
+**Cause:** PEP 668 protects the system Python environment from pip changes.
+
+**Fix:** Use the one-line installer, which creates its own virtual environment
+on these systems, or use pipx or uv. See the [README Install section](../README.md#install)
+for exact commands.
+
+## Claude Code shows "Missing environment variables"
+
+**You see:** `claude mcp list` or `/mcp` reports "Missing environment variables"
+for gmi.
+
+**Cause:** The printed configuration snippet lists four names: `GMI_API_KEY`,
+`GMI_COMPUTE_API_KEY`, `GMI_SANDBOX_API_KEY` and `GMI_SANDBOX_IDC_NAME`.
+Some may be unset.
+
+**Fix:** This is harmless for variables you do not use. Set the ones you need
+in the shell that starts Claude Code.
+
+## Windows `claude mcp add-json` quoting (unconfirmed)
+
+**You see:** `Invalid configuration: : Invalid input` after using the command
+printed by `gmi mcp config --client claude-code` in a Windows shell.
+
+**Cause (unconfirmed):** The printed `claude mcp add-json` command uses POSIX
+single quotes. Windows shells handle quotes differently. This was reported in
+[pull request 10](https://github.com/zkasuran/gmi/pull/10) and has not yet been confirmed.
+
+**Workaround:** Until this is settled, put the printed `.mcp.json` block in a
+file instead of using `add-json`.

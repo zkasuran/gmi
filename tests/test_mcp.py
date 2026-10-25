@@ -101,7 +101,9 @@ def test_gating_and_exact_cli_counts_from_manifest(flags, methods, curated):
     counts['read'] += 3
     counts['write'] += len(curated) - 3
     assert report['counts'] == {**{kind: counts[kind] for kind in ('read', 'write', 'destructive')},
-                                'curated': len(curated), 'total': len(expected_names)}
+                                'curated': len(curated), 'total': len(expected_names),
+                                'idempotency_key': sum(any(p['name'].lower() == 'idempotency-key'
+                                                          for p in op['header_parameters']) for op in allowed)}
     for op in manifest()['operations']:
         if op['security_scheme'] in {'sandboxAccessToken', 'bearerEmailVerificationToken'} or op['name'] == 'create-api-key' or (op['service'] == 'iam' and op['group'] == 'oauth'):
             assert mcp.tool_name(op) not in expected_names
@@ -554,6 +556,8 @@ def test_idempotency_schema_matches_manifest_and_retry_descriptions():
     actual = {row['name'] for row in rows if 'idempotency_key' in row['inputSchema']['properties']}
     assert actual == expected
     assert len(actual) == 2
+    assert {row['name'] for row in rows if row['idempotency_key']} == expected
+    assert all(isinstance(row['idempotency_key'], bool) for row in rows)
     for row in rows:
         if row['name'] in expected:
             schema = row['inputSchema']

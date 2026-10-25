@@ -47,23 +47,23 @@ gmi mcp config --client cursor
 Counts below were copied from the tool on 23 October 2026. Curated is a subset
 of the read and write counts, not an additional class to sum.
 
-| Launch flags | Read | Write | Destructive | Curated subset | Total |
-|---|---:|---:|---:|---:|---:|
-| Default | 36 | 0 | 0 | 3 | 36 |
-| `--allow-write` | 36 | 42 | 0 | 6 | 78 |
-| `--allow-destructive` | 36 | 42 | 12 | 6 | 90 |
+| Launch flags | Read | Write | Destructive | Curated subset | Total | Idempotency key |
+|---|---:|---:|---:|---:|---:|---:|
+| Default | 36 | 0 | 0 | 3 | 36 | 0 |
+| `--allow-write` | 36 | 42 | 0 | 6 | 78 | 2 |
+| `--allow-destructive` | 36 | 42 | 12 | 6 | 90 | 2 |
 
 Exact command output:
 
 ```text
 gmi mcp tools
-Counts: read=36, write=0, destructive=0, curated=3, total=36
+Counts: read=36, write=0, destructive=0, curated=3, total=36, idempotency_key=0
 
 gmi mcp tools --allow-write
-Counts: read=36, write=42, destructive=0, curated=6, total=78
+Counts: read=36, write=42, destructive=0, curated=6, total=78, idempotency_key=2
 
 gmi mcp tools --allow-destructive
-Counts: read=36, write=42, destructive=12, curated=6, total=90
+Counts: read=36, write=42, destructive=12, curated=6, total=90, idempotency_key=2
 ```
 
 | Class | Registration | Behavior |
@@ -85,10 +85,11 @@ unregistered tools fail with an error and an enabling flag or filter hint.
 Generated names use `{service}_{operation_name}` with dashes replaced by
 underscores. Names are unique and at most 64 characters. Input schemas retain
 resolved request body schemas, required path strings, query types and enums.
-Unexpected top-level arguments are rejected. Idempotency-Key is not a model
-argument: each applicable call receives a fresh UUID. GET tools advertise
-read-only annotations; GET, PUT and DELETE advertise idempotence. DELETE tools
-advertise destructive behavior. All tools advertise access to external systems.
+Unexpected top-level arguments are rejected. Operations accepting an
+Idempotency-Key header expose an optional `idempotency_key` argument. GET tools
+advertise read-only annotations and idempotence. Write and destructive tools
+advertise no idempotence. DELETE tools advertise destructive behavior. All tools
+advertise access to external systems.
 
 Every result, including errors, redacts string values when the lower-cased key
 name, after replacing `-` with `_`, ends with `token`, `secret`, `password`,
@@ -216,6 +217,35 @@ Claude Code not run here. For Cursor see [Cursor check](#cursor-check).
 Documentation references: [Codex](https://developers.openai.com/codex/mcp/),
 [Claude Code](https://code.claude.com/docs/en/mcp) and
 [Cursor](https://cursor.com/docs/context/mcp).
+
+## Retries and idempotency
+
+The MCP server never retries a call by itself. After a write or destructive call
+fails, check the current state with a get or list tool before repeating it.
+A timeout, network failure or HTTP 5xx response does not establish whether the
+change was made.
+
+`gmi mcp tools --allow-write --json` computes key support from the manifest.
+Each tool has an `idempotency_key` boolean and the counts include the number of
+tools that support it. With the current manifest, two tools support a key:
+`sandbox_create_sandbox` and `sandbox_create_template`. All other write and
+destructive tools are not idempotent. The default read-only selection has zero
+key-supporting tools; both write-enabled selections have two, as checked on
+25 October 2026.
+
+For either creation tool, supply `idempotency_key` with 8 to 128 characters
+using only letters, digits, dot, underscore and hyphen. Reuse the same value
+and the same arguments when retrying that call so GMI can recognise a duplicate.
+If omitted, gmi generates a UUID. Successful and failed tool results return the
+key used in `_meta` under `gmi/idempotency_key`. Record that value before retrying.
+Invalid keys fail before any HTTP request is sent. The argument and header
+handling are verified offline; GMI's duplicate recognition has not been tested
+in this build.
+
+`gmi_sandbox_run` always attempts sandbox cleanup and keeps the reusable template.
+A failed call may have left a running sandbox or a template. Use
+`sandbox_list_sandboxes` to check for leftover sandboxes and
+`sandbox_list_templates` to inspect templates before running it again.
 
 ## Cursor check
 

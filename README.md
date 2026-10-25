@@ -615,6 +615,13 @@ Curated tools are included in these totals. Service and tool-name glob filters
 can reduce the surface. The launch flags are operator consent for subsequent
 calls; tools do not prompt on stdin.
 
+The MCP server never retries calls by itself. Only `sandbox_create_sandbox`
+and `sandbox_create_template` support `idempotency_key`; reuse the same value
+when retrying. `gmi mcp tools --allow-write --json` reports this flag per tool
+and a count of 2. All other writes are not idempotent. Check state with a get
+or list tool before repeating a write. See [Retries and idempotency](docs/MCP.md#retries-and-idempotency)
+for result metadata and sandbox cleanup limits.
+
 Raw sandbox data-plane operations, API key creation, email verification token
 operations and IAM OAuth operations are never exposed. These need secrets or
 create credentials that should not pass through the model. Curated sandbox

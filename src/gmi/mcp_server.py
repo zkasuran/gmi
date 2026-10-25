@@ -57,12 +57,14 @@ def tools_command(ctx, as_json, **options):
     """List exactly the tools serve would expose without loading the SDK."""
     rows = select_tools(**options)
     counts = {kind: sum(row['class'] == kind for row in rows) for kind in ('read', 'write', 'destructive')}
-    counts.update(curated=sum(row.get('curated', False) for row in rows), total=len(rows))
+    counts.update(curated=sum(row.get('curated', False) for row in rows), total=len(rows),
+                  idempotency_key=sum(row['idempotency_key'] for row in rows))
     if as_json or (ctx.find_root().obj or {}).get('as_json'):
         click.echo(json.dumps({'tools': rows, 'counts': counts}))
     else:
         for row in rows:
-            click.echo(f"{row['name']}\t{row['class']}" + ('\tcurated' if row.get('curated') else ''))
+            click.echo(f"{row['name']}\t{row['class']}\tidempotency_key={str(row['idempotency_key']).lower()}"
+                       + ('\tcurated' if row.get('curated') else ''))
         click.echo('Counts: ' + ', '.join(f'{key}={value}' for key, value in counts.items()))
 
 
@@ -188,7 +190,7 @@ def generated_tools():
         description += f"\n\nClass: {kind}. {operation['method']} {operation['path']}"
         description += retry_description(kind, accepts_idempotency_key(operation))
         rows.append({'name': tool_name(operation), 'class': kind, 'service': operation['service'],
-                     'curated': False, 'description': description.replace('\u2014', '-').replace('\u2013', '-'),
+                     'curated': False, 'idempotency_key': accepts_idempotency_key(operation), 'description': description.replace('\u2014', '-').replace('\u2013', '-'),
                      'inputSchema': input_schema(operation),
                      'annotations': {'readOnlyHint': kind == 'read', 'destructiveHint': kind == 'destructive',
                                      'idempotentHint': kind == 'read', 'openWorldHint': True}})
@@ -230,7 +232,7 @@ def curated_tools():
         ('gmi_sandbox_get_file', 'read', 'sandbox', 'Read a UTF-8 file from an existing sandbox. Maximum 256 KB. Connects internally without exposing access tokens; use the CLI for binary or larger files.',
          {'sandbox_id': string, 'path': string}, ['sandbox_id', 'path']),
     ]
-    return [{'name': name, 'class': kind, 'service': service, 'curated': True,
+    return [{'name': name, 'class': kind, 'service': service, 'curated': True, 'idempotency_key': False,
              'description': description + f' Class: {kind}; curated.' + retry_description(kind),
              'inputSchema': {'type': 'object', 'properties': props, 'required': required, 'additionalProperties': False},
              'annotations': {'readOnlyHint': kind == 'read', 'destructiveHint': False,
