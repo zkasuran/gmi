@@ -132,6 +132,25 @@ uv tool install git+https://github.com/zkasuran/gmi
 
 Update later with `pip install --upgrade git+https://github.com/zkasuran/gmi`. You also need an API key: create one in the [GMI Cloud console](https://console.gmicloud.ai) under API Keys (see the [quickstart](https://docs.gmicloud.ai/quickstart)).
 
+### Install on Windows
+
+`install.sh` is for Linux and macOS. On Windows install with pip, pipx or uv
+from PowerShell; Python 3.10 or newer is required:
+
+```powershell
+pip install git+https://github.com/zkasuran/gmi
+gmi --version
+```
+
+If PowerShell cannot find `gmi` afterwards, the Scripts directory of your
+Python install is not on `PATH`; `python -m gmi.cli --version` works without it.
+`uv tool install` puts `gmi.exe` in `%USERPROFILE%\.localin`; run
+`uv tool update-shell` once to add that directory to `PATH`. The config file
+lives at `%USERPROFILE%\.config\gmi\config.toml`. Set `$env:GMI_API_KEY` instead of
+`export` in PowerShell. Checked on 25 October 2026 with Windows 10 and Python 3.11.5:
+install, `gmi --version`, `gmi mcp tools` and the offline test suite work. The installer
+tests are skipped on Windows because they run `install.sh` with `/bin/sh`.
+
 ## Quick start
 
 ```sh
