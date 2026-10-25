@@ -151,8 +151,10 @@ def retry_hint(kind, idempotency_key=None):
 def retry_description(kind, has_key=False):
     if kind == 'read':
         return ''
-    return (' Pass the same idempotency_key when retrying.' if has_key else
-            ' Not idempotent unless it has an idempotency_key argument: check state before retrying.')
+    description = ' Not idempotent unless it has an idempotency_key argument: check state before retrying.'
+    if has_key:
+        description += ' Pass the same idempotency_key when retrying.'
+    return description
 
 
 def input_schema(operation):

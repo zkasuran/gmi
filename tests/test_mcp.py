@@ -566,7 +566,7 @@ def test_idempotency_schema_matches_manifest_and_retry_descriptions():
                 'Reuse the same value when retrying this call so GMI can recognise a duplicate. '
                 'If omitted, gmi generates one and returns it in the result metadata.')
             assert 'Pass the same idempotency_key when retrying.' in row['description']
-        elif row['class'] != 'read':
+        if row['class'] != 'read':
             assert ('Not idempotent unless it has an idempotency_key argument: '
                     'check state before retrying.') in row['description']
         if row['class'] != 'read':
