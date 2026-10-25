@@ -5,6 +5,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 From 1.0.0 the documented commands follow [Semantic Versioning](https://semver.org/).
 Areas listed as not verified are excluded from that promise.
 
+## [1.0.1] - 2026-10-25
+
+### Added
+
+- Optional `idempotency_key` argument for MCP operations accepting the
+  Idempotency-Key header, with validation and the key returned in result metadata.
+- `idempotency_key` column per tool in `gmi mcp tools --json` and a support count.
+- Troubleshooting guide from @Ali30mhi and Cursor check from @vidhusanv17.
+- Retry guidance and troubleshooting entries for PEP 668, Claude Code environment
+  variables and an unconfirmed Windows quoting report.
+
+### Changed
+
+- Write and destructive tool errors for network failures, timeouts and HTTP 5xx
+  responses warn that changes may have been made and recommend checking state.
+- Write tool descriptions explain retry limits. Failed sandbox run calls warn
+  about possible leftover sandboxes or templates.
+- Package version and installer default tag are now 1.0.1 and `v1.0.1`.
+
+### Not verified
+
+- Claude Code and Cursor MCP setups have not been run here.
+- Streamable HTTP transport, MCP resources and MCP prompts are not implemented.
+- `gmi serve` has not been deployed on the AgentBox marketplace. The Docker image
+  has only been built and run locally. Image push, GMI injecting the runtime key
+  and the marketplace wizard steps have not been done; gateway access control
+  remains unverified.
+- Cluster write operations remain unverified.
+- macOS and Windows have not been tested.
+
 ## [1.0.0] - 2026-10-25
 
 ### Added
