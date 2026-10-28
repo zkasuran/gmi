@@ -16,6 +16,7 @@
 </p>
 
 <p align="center">
+  <a href="#built-in-public-with-gmi-cloud">Built in public</a> |
   <a href="#install">Install</a> |
   <a href="#quick-start">Quick start</a> |
   <a href="#the-interactive-session">The session</a> |
@@ -46,6 +47,43 @@ GMI Cloud has an OpenAI-compatible API, a Model Hub and a web console. `gmi` add
 
 > [!NOTE]
 > **Status: 1.0.1, Day 6 of a six-day public build (20 to 25 Oct 2026).** From 1.0.0 the documented commands follow semantic versioning. Areas marked as not verified are excluded from that promise. Days 1 to 3 include live API verification. The owner verified sandbox run, create, exec, file transfer, get, timeout and kill live on 23 October. The service image was built and run locally on 22 October. The MCP stdio server passes offline tests for both protocol eras; Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol). Claude Code and Cursor not run here. Marketplace deployment and Cluster writes remain unverified. See the [roadmap](#roadmap) for scope and verification limits.
+
+## Built in public with GMI Cloud
+
+From 20 to 25 October 2026 the GMI Cloud team ran their official X account, [@gmi_cloud](https://x.com/gmi_cloud), as a six-day takeover. `gmi` was built in that window with new work posted each day. The links below go to the posts as GMI published them, so the wording is theirs. `gmi` remains a community project and is not an official GMI product.
+
+| Day | Shipped | Official posts on @gmi_cloud |
+|---|---|---|
+| 1 (Tue 20 Oct) | The interactive session, model hub and chat | [Takeover opener](https://x.com/gmi_cloud/status/2112604922609045925) and [Day 1 recording](https://x.com/gmi_cloud/status/2112650065399492844) |
+| 2 (Wed 21 Oct) | Image and video from inside the session | [Day 2 recording](https://x.com/gmi_cloud/status/2112964749365559729) and [the 5 second video it made](https://x.com/gmi_cloud/status/2113014399506231806) |
+| 3 (Thu 22 Oct) | A command for each of 93 API operations | [Day 3](https://x.com/gmi_cloud/status/2113335684362903969) and [What the live check found](https://x.com/gmi_cloud/status/2113390669683446157) |
+| 4 (Fri 23 Oct) | `gmi sandbox` and `gmi serve` | Not linked here. See [docs/AGENTBOX.md](docs/AGENTBOX.md) |
+| 5 (Sat 24 Oct) | `gmi mcp serve` for agents | [Day 5](https://x.com/gmi_cloud/status/2114080486280884523) and [What the agent may do](https://x.com/gmi_cloud/status/2114132926103527827) |
+| 6 (Sun 25 Oct) | The 1.0 release, one-line install, good first issues | [Final day](https://x.com/gmi_cloud/status/2114408023578013770) and [the recap thread](https://x.com/gmi_cloud/status/2114562597710352815) |
+
+What the posts said about the results, including the limits:
+
+> What the live check found.
+>
+> gmi probed the 17 read operations that need no ID: 15 answered ok and 2 IAM reads need a different key type. The other 76 were not run because they write or need an ID.
+>
+> Sandbox and Cluster need a compute key. The inference key is rejected.
+>
+> <sub>@gmi_cloud, 22 Oct 2026 | [post](https://x.com/gmi_cloud/status/2113390669683446157)</sub>
+
+> What broke when it ran for real:
+>
+> A cost estimate 1000 times too high for per-character pricing. 26 of 93 generated commands could not take their ID. A Codex setup that never passed the keys. A docs install command for a package that is not on PyPI.
+>
+> All fixed.
+>
+> <sub>@gmi_cloud, 26 Oct 2026 | [post](https://x.com/gmi_cloud/status/2114562602068267514)</sub>
+
+> What is not proven: the Claude Code and Cursor MCP setups have not been run. gmi serve runs from a Docker image locally but is not on the AgentBox marketplace yet. macOS and Windows are untested.
+>
+> <sub>@gmi_cloud, 26 Oct 2026 | [post](https://x.com/gmi_cloud/status/2114562603695694076)</sub>
+
+The author also won the Multimodality track at MiniMax Week with [GMI Cloud](https://www.gmicloud.ai) and MiniMax, with a different project called Overhear. [GMI announced the winners](https://x.com/gmi_cloud/status/2099577588494774588) and the code is at [github.com/zkasuran/overhear](https://github.com/zkasuran/overhear).
 
 ## Install
 
