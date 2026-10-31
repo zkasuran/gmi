@@ -258,7 +258,9 @@ def test_no_pypi_only_mcp_install_commands_in_user_facing_files():
 
 
 @pytest.mark.parametrize('client', ['codex', 'claude-code', 'cursor'])
-@pytest.mark.parametrize('flags', [[], ['--allow-write']])
+@pytest.mark.parametrize('flags', [
+    [], ['--allow-write'], ['--allow-destructive'], ['--allow-write', '--allow-destructive'],
+])
 def test_config_has_no_credentials_and_preserves_write_flag(client, flags, monkeypatch):
     names = ['GMI_API_KEY', 'GMI_COMPUTE_API_KEY', 'GMI_SANDBOX_API_KEY', 'GMI_SANDBOX_IDC_NAME']
     for index, name in enumerate(names):
@@ -291,7 +293,26 @@ def test_config_has_no_credentials_and_preserves_write_flag(client, flags, monke
         assert block == {'mcpServers': {'gmi': expected}}
         assert "unverified, taken from the client's documentation." in result.output
         if client == 'claude-code':
+            quote_free = next(line for line in result.output.splitlines()
+                              if line.startswith('claude mcp add --'))
+            assert quote_free == 'claude mcp add --transport stdio gmi -- gmi ' + ' '.join(args)
+            assert not any(quote in quote_free for quote in ("'", '"', '`'))
+            assert '# Quote-free command: works in bash, zsh, cmd.exe and PowerShell.' in result.output
+            assert '# The server inherits the environment of the shell that starts Claude Code.' in result.output
+            assert ('Set GMI_API_KEY (inference) and GMI_COMPUTE_API_KEY or '
+                    'GMI_SANDBOX_API_KEY (sandbox and cluster) there.') in result.output
+            assert ('This form was verified on Linux with Claude Code 2.1.316 '
+                    'and has not been run on Windows.') in result.output
+            project_label = '# Project file route: explicit forwarding of the four variable names.'
+            posix_label = '# add-json: POSIX shells only.'
+            assert result.output.index(quote_free) < result.output.index(project_label)
+            assert result.output.index(project_label) < result.output.index(marker)
+            assert result.output.index(snippet) < result.output.index(posix_label)
+            assert '# On Windows use the quote-free command or the project file route.' in result.output
+            assert ('Windows shells change the quotes and Claude Code then reports '
+                    'Invalid configuration: : Invalid input.') in result.output
             command = next(line for line in result.output.splitlines() if line.startswith('claude mcp add-json '))
+            assert result.output.index(posix_label) < result.output.index(command)
             assert command.startswith("claude mcp add-json gmi '") and command.endswith("'")
             words = shlex.split(command)
             assert words[:4] == ['claude', 'mcp', 'add-json', 'gmi']
