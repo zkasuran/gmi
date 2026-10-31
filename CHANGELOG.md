@@ -25,6 +25,16 @@ Areas listed as not verified are excluded from that promise.
   with Claude Code 2.1.316 using a stand-in server. Windows itself is still
   unverified.
 
+### Verification
+
+- `pytest -q -m "not live and not live_media"` passed twice: 306 passed and
+  9 deselected on each run. No live API calls were made.
+- `python tools/gen_api.py --check` and `sh -n install.sh` passed.
+- `gmi --version` printed `gmi 1.0.2`. The Claude Code configuration command
+  passed offline checks for both permission flags and matching documentation.
+- Windows execution, GMI calls through Claude Code and installation from the
+  new tag remain unverified. The new tag has not been created.
+
 ## [1.0.1] - 2026-10-25
 
 ### Added
