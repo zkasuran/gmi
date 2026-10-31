@@ -11,6 +11,14 @@
 </p>
 
 <p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/clouder-logo-white.svg">
+    <img src="docs/clouder-logo-black.svg" alt="GMI Clouder" height="26">
+  </picture><br>
+  <sub>The author is a GMI Cloud Clouder (community ambassador). gmi is community built and is not an official GMI Cloud product.</sub>
+</p>
+
+<p align="center">
   <b>Chat with any model on <a href="https://www.gmicloud.ai">GMI Cloud</a> from your terminal.</b><br>
   Switch models mid-conversation, see what everything costs and script it all with JSON.
 </p>
@@ -623,6 +631,8 @@ been done.
 After the hackathon results are announced, gmi will be deployed on the AgentBox marketplace; until then the Docker image has only been built and run locally.
 
 ## `gmi mcp serve`
+
+Step by step guide with real outputs: [Run coding agents safely on GMI](docs/SAFE-AGENTS.md).
 
 Let an agent use GMI Cloud through MCP tools over local stdio. Install the optional
 SDK extra, preview the tools then configure your agent client:

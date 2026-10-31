@@ -7,6 +7,11 @@ Areas listed as not verified are excluded from that promise.
 
 ## [1.0.2] - 2026-10-31
 
+### Added
+
+- A step by step guide, `docs/SAFE-AGENTS.md`, for running coding agents on GMI with read-only defaults, with outputs taken from live runs.
+- The GMI Clouder logo in the README, used with GMI's written permission. gmi remains a community project and not an official GMI product.
+
 ### Changed
 
 - `gmi mcp config --client claude-code` prints the quote-free stdio command

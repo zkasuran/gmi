@@ -249,8 +249,10 @@ and the same arguments when retrying that call so GMI can recognise a duplicate.
 If omitted, gmi generates a UUID. Successful and failed tool results return the
 key used in `_meta` under `gmi/idempotency_key`. Record that value before retrying.
 Invalid keys fail before any HTTP request is sent. The argument and header
-handling are verified offline; GMI's duplicate recognition has not been tested
-in this build.
+handling are verified offline. GMI's duplicate recognition was tested live on
+25 October 2026: the same key sent twice to `sandbox_create_template` and
+`sandbox_create_sandbox` returned the same template and the same sandbox. A
+different key made a new template.
 
 `gmi_sandbox_run` always attempts sandbox cleanup and keeps the reusable template.
 A failed call may have left a running sandbox or a template. Use
