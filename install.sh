@@ -7,7 +7,7 @@ Install gmi from GitHub. Requires Python 3.10 or newer.
 Usage: sh install.sh [--mcp] [--help]
   --mcp    Include the optional MCP SDK.
   --help   Show this help without installing.
-GMI_REF overrides the default tag v1.0.1.
+GMI_REF overrides the default tag v1.0.2.
 GMI_INSTALL_MCP=1 also includes the MCP SDK.
 Installer order: uv tool install, pipx install, then pip or a private virtual environment.
 HELP
@@ -31,7 +31,7 @@ if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)';
     exit 1
 fi
 
-ref=${GMI_REF:-v1.0.1}
+ref=${GMI_REF:-v1.0.2}
 package="git+https://github.com/zkasuran/gmi@$ref"
 if [ "$install_mcp" = 1 ]; then
     package="gmi[mcp] @ $package"

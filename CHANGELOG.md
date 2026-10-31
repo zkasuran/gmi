@@ -5,6 +5,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 From 1.0.0 the documented commands follow [Semantic Versioning](https://semver.org/).
 Areas listed as not verified are excluded from that promise.
 
+## [1.0.2] - 2026-10-31
+
+### Changed
+
+- `gmi mcp config --client claude-code` prints the quote-free stdio command
+  first, the project `.mcp.json` block second and the POSIX-only `add-json`
+  command last. Both permission flags are carried into the server arguments.
+- Printed guidance explains inherited shell credentials and explicit forwarding
+  without printing environment values. README and MCP troubleshooting match it.
+- Package version and installer default tag are now 1.0.2 and `v1.0.2`.
+
+### Fixed
+
+- Windows quoting in the printed Claude Code command, reported by
+  @chinmayee5599 in [pull request 10](https://github.com/zkasuran/gmi/pull/10).
+  The error `Invalid configuration: : Invalid input` was reproduced on Linux
+  with mangled JSON quotes. The new quote-free form was verified on Linux
+  with Claude Code 2.1.316 using a stand-in server. Windows itself is still
+  unverified.
+
 ## [1.0.1] - 2026-10-25
 
 ### Added

@@ -46,7 +46,7 @@ GMI Cloud has an OpenAI-compatible API, a Model Hub and a web console. `gmi` add
 - **Careful with your key.** Hidden prompt, verified before it is saved, stored with mode 600, never printed.
 
 > [!NOTE]
-> **Status: 1.0.1, Day 6 of a six-day public build (20 to 25 Oct 2026).** From 1.0.0 the documented commands follow semantic versioning. Areas marked as not verified are excluded from that promise. Days 1 to 3 include live API verification. The owner verified sandbox run, create, exec, file transfer, get, timeout and kill live on 23 October. The service image was built and run locally on 22 October. The MCP stdio server passes offline tests for both protocol eras; Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol). Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Cursor remain unverified. Claude Code on Windows has not been run. Marketplace deployment and Cluster writes remain unverified. See the [roadmap](#roadmap) for scope and verification limits.
+> **Status: 1.0.2, Day 6 of a six-day public build (20 to 25 Oct 2026).** From 1.0.0 the documented commands follow semantic versioning. Areas marked as not verified are excluded from that promise. Days 1 to 3 include live API verification. The owner verified sandbox run, create, exec, file transfer, get, timeout and kill live on 23 October. The service image was built and run locally on 22 October. The MCP stdio server passes offline tests for both protocol eras; Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol). Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Cursor remain unverified. Claude Code on Windows has not been run. Marketplace deployment and Cluster writes remain unverified. See the [roadmap](#roadmap) for scope and verification limits.
 
 ## Built in public with GMI Cloud
 
@@ -103,7 +103,7 @@ The installer requires Python 3.10 or newer and chooses uv, pipx or Python pip
 in that order. On Debian and Ubuntu systems without uv or pipx where Python is
 externally managed it creates a private virtual environment at
 `~/.local/share/gmi/venv` and links `gmi` from `~/.local/bin`. It installs the
-`v1.0.1` tag by default. Set `GMI_REF` on the shell running the script to choose
+`v1.0.2` tag by default. Set `GMI_REF` on the shell running the script to choose
 another ref; `GMI_INSTALL_MCP=1` also enables MCP. Use `sh install.sh --help`
 from a checkout for usage.
 

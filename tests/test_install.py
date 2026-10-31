@@ -51,9 +51,9 @@ fi
     (("pip",), ["python3", "-m", "pip", "install", "--user"]),
 ])
 @pytest.mark.parametrize(("arguments", "environment", "package"), [
-    ((), {}, BASE + "v1.0.1"),
-    (("--mcp",), {}, "gmi[mcp] @ " + BASE + "v1.0.1"),
-    ((), {"GMI_INSTALL_MCP": "1"}, "gmi[mcp] @ " + BASE + "v1.0.1"),
+    ((), {}, BASE + "v1.0.2"),
+    (("--mcp",), {}, "gmi[mcp] @ " + BASE + "v1.0.2"),
+    ((), {"GMI_INSTALL_MCP": "1"}, "gmi[mcp] @ " + BASE + "v1.0.2"),
     ((), {"GMI_REF": "release/test"}, BASE + "release/test"),
     (("--mcp",), {"GMI_REF": "release/test"}, "gmi[mcp] @ " + BASE + "release/test"),
     ((), {"GMI_REF": "test'quote"}, BASE + "test'quote"),

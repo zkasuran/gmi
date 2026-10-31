@@ -10,7 +10,7 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 git clone --bare "$root" "$work/repo.git" >/dev/null
-git --git-dir="$work/repo.git" tag -f v1.0.1 >/dev/null
+git --git-dir="$work/repo.git" tag -f v1.0.2 >/dev/null
 
 run_image() {
     image=$1
@@ -26,8 +26,8 @@ run_image() {
             $setup
             git config --global url.file:///source/repo.git.insteadOf https://github.com/zkasuran/gmi
             git config --global --add safe.directory '*'
-            HOME=/root GMI_REF=v1.0.1 sh /work/install.sh --mcp
-            test \"\$(HOME=/root /root/.local/bin/gmi --version)\" = 'gmi 1.0.1'
+            HOME=/root GMI_REF=v1.0.2 sh /work/install.sh --mcp
+            test \"\$(HOME=/root /root/.local/bin/gmi --version)\" = 'gmi 1.0.2'
             HOME=/root /root/.local/bin/gmi mcp tools >/dev/null
         "
 }

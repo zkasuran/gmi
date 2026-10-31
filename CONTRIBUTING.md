@@ -15,7 +15,7 @@ python3 -m venv .venv
 pip install -e ".[test]"
 ```
 
-The one-line installer defaults to tag `v1.0.1`. Set `GMI_REF` to test another
+The one-line installer defaults to tag `v1.0.2`. Set `GMI_REF` to test another
 ref. See the [README Install section](README.md#install) for installer commands.
 
 ## Run tests

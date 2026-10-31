@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_package_version_agrees():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    assert metadata["project"]["version"] == __version__ == "1.0.1"
+    assert metadata["project"]["version"] == __version__ == "1.0.2"
 
 
 def test_no_old_version_in_source_or_tests():
@@ -31,4 +31,4 @@ def test_no_old_version_in_source_or_tests():
 def test_version_option():
     result = CliRunner().invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert result.output == "gmi 1.0.1\n"
+    assert result.output == "gmi 1.0.2\n"
