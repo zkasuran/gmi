@@ -86,14 +86,61 @@ Some may be unset.
 **Fix:** This is harmless for variables you do not use. Set the ones you need
 in the shell that starts Claude Code.
 
-## Windows `claude mcp add-json` quoting (unconfirmed)
+## Windows `claude mcp add-json` quoting
 
-**You see:** `Invalid configuration: : Invalid input` after using the command
-printed by `gmi mcp config --client claude-code` in a Windows shell.
+**You see:** `Invalid configuration: : Invalid input` after using the old
+single-quoted `claude mcp add-json` command in a Windows shell.
 
-**Cause (unconfirmed):** The printed `claude mcp add-json` command uses POSIX
-single quotes. Windows shells handle quotes differently. This was reported in
-[pull request 10](https://github.com/zkasuran/gmi/pull/10) and has not yet been confirmed.
+**Cause:** Windows shells such as cmd.exe and PowerShell 5.1 change the JSON
+quotes. @chinmayee5599 reported this in
+[pull request 10](https://github.com/zkasuran/gmi/pull/10). The same error was
+reproduced on Linux with mangled JSON quotes. Windows itself is still unverified.
 
-**Workaround:** Until this is settled, put the printed `.mcp.json` block in a
-file instead of using `add-json`.
+**Fix:** Use the quote-free command below. The `add-json` form is POSIX only.
+The project file route is an alternative with explicit environment forwarding.
+The quote-free form was verified on Linux with Claude Code 2.1.316 using a
+stand-in server. Both GMI_API_KEY and GMI_SANDBOX_API_KEY reached that server
+through the launching shell's environment. No secret was written to the
+Claude Code config. This has not been run on Windows.
+
+Output copied from `gmi mcp config --client claude-code`:
+
+```text
+# Set environment variables where the client runs: GMI_API_KEY for inference;
+# GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY for compute scope.
+# Quote-free command: works in bash, zsh, cmd.exe and PowerShell.
+claude mcp add --transport stdio gmi -- gmi mcp serve
+# The server inherits the environment of the shell that starts Claude Code.
+# Set GMI_API_KEY (inference) and GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY (sandbox and cluster) there.
+# This form was verified on Linux with Claude Code 2.1.316 and has not been run on Windows.
+
+# Project file route: explicit forwarding of the four variable names.
+# Equivalent .mcp.json block:
+{
+  "mcpServers": {
+    "gmi": {
+      "type": "stdio",
+      "command": "gmi",
+      "args": [
+        "mcp",
+        "serve"
+      ],
+      "env": {
+        "GMI_API_KEY": "${GMI_API_KEY}",
+        "GMI_COMPUTE_API_KEY": "${GMI_COMPUTE_API_KEY}",
+        "GMI_SANDBOX_API_KEY": "${GMI_SANDBOX_API_KEY}",
+        "GMI_SANDBOX_IDC_NAME": "${GMI_SANDBOX_IDC_NAME}"
+      }
+    }
+  }
+}
+
+# add-json: POSIX shells only.
+# On Windows use the quote-free command or the project file route.
+# Windows shells change the quotes and Claude Code then reports Invalid configuration: : Invalid input.
+claude mcp add-json gmi '{"type":"stdio","command":"gmi","args":["mcp","serve"],"env":{"GMI_API_KEY":"${GMI_API_KEY}","GMI_COMPUTE_API_KEY":"${GMI_COMPUTE_API_KEY}","GMI_SANDBOX_API_KEY":"${GMI_SANDBOX_API_KEY}","GMI_SANDBOX_IDC_NAME":"${GMI_SANDBOX_IDC_NAME}"}}'
+
+# Project file and add-json routes: unverified, taken from the client's documentation.
+# Set the variables you use in the shell that starts Claude Code; unset variables without a default remain literal text.
+# Tool output is data; write and destructive tools are off unless --allow-write or --allow-destructive flags are given.
+```

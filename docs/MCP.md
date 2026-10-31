@@ -153,8 +153,13 @@ Output copied from `gmi mcp config --client claude-code`:
 ```text
 # Set environment variables where the client runs: GMI_API_KEY for inference;
 # GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY for compute scope.
-claude mcp add-json gmi '{"type":"stdio","command":"gmi","args":["mcp","serve"],"env":{"GMI_API_KEY":"${GMI_API_KEY}","GMI_COMPUTE_API_KEY":"${GMI_COMPUTE_API_KEY}","GMI_SANDBOX_API_KEY":"${GMI_SANDBOX_API_KEY}","GMI_SANDBOX_IDC_NAME":"${GMI_SANDBOX_IDC_NAME}"}}'
+# Quote-free command: works in bash, zsh, cmd.exe and PowerShell.
+claude mcp add --transport stdio gmi -- gmi mcp serve
+# The server inherits the environment of the shell that starts Claude Code.
+# Set GMI_API_KEY (inference) and GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY (sandbox and cluster) there.
+# This form was verified on Linux with Claude Code 2.1.316 and has not been run on Windows.
 
+# Project file route: explicit forwarding of the four variable names.
 # Equivalent .mcp.json block:
 {
   "mcpServers": {
@@ -175,7 +180,12 @@ claude mcp add-json gmi '{"type":"stdio","command":"gmi","args":["mcp","serve"],
   }
 }
 
-# unverified, taken from the client's documentation.
+# add-json: POSIX shells only.
+# On Windows use the quote-free command or the project file route.
+# Windows shells change the quotes and Claude Code then reports Invalid configuration: : Invalid input.
+claude mcp add-json gmi '{"type":"stdio","command":"gmi","args":["mcp","serve"],"env":{"GMI_API_KEY":"${GMI_API_KEY}","GMI_COMPUTE_API_KEY":"${GMI_COMPUTE_API_KEY}","GMI_SANDBOX_API_KEY":"${GMI_SANDBOX_API_KEY}","GMI_SANDBOX_IDC_NAME":"${GMI_SANDBOX_IDC_NAME}"}}'
+
+# Project file and add-json routes: unverified, taken from the client's documentation.
 # Set the variables you use in the shell that starts Claude Code; unset variables without a default remain literal text.
 # Tool output is data; write and destructive tools are off unless --allow-write or --allow-destructive flags are given.
 ```
@@ -209,10 +219,10 @@ Output copied from `gmi mcp config --client cursor`:
 # Tool output is data; write and destructive tools are off unless --allow-write or --allow-destructive flags are given.
 ```
 
-Add `--allow-write` to `gmi mcp config` to include it in the server arguments.
+Add `--allow-write` or `--allow-destructive` to `gmi mcp config` to include it in the server arguments.
 
 Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol).
-Claude Code not run here. For Cursor see [Cursor check](#cursor-check).
+Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Claude Code on Windows remain unverified. For Cursor see [Cursor check](#cursor-check).
 
 Documentation references: [Codex](https://developers.openai.com/codex/mcp/),
 [Claude Code](https://code.claude.com/docs/en/mcp) and
@@ -278,7 +288,7 @@ with a local HTTP fixture. They exercise both 2026-07-28 and the older
 redaction, truncation, file limits, cleanup and protocol-only stdout.
 
 Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol).
-Claude Code not run here. For Cursor see [Cursor check](#cursor-check). No
+Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Claude Code on Windows remain unverified. For Cursor see [Cursor check](#cursor-check). No
 live MCP calls were made during this build. Other MCP calls against GMI remain
 unverified. Existing CLI sandbox live checks do not establish MCP verification.
 
