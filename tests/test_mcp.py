@@ -291,7 +291,7 @@ def test_config_has_no_credentials_and_preserves_write_flag(client, flags, monke
         assert block == {'mcpServers': {'gmi': expected}}
         assert "unverified, taken from the client's documentation." in result.output
         if client == 'claude-code':
-            command = next(line for line in result.output.splitlines() if line.startswith('claude '))
+            command = next(line for line in result.output.splitlines() if line.startswith('claude mcp add-json '))
             assert command.startswith("claude mcp add-json gmi '") and command.endswith("'")
             words = shlex.split(command)
             assert words[:4] == ['claude', 'mcp', 'add-json', 'gmi']

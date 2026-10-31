@@ -71,9 +71,11 @@ def tools_command(ctx, as_json, **options):
 @mcp_group.command('config')
 @click.option('--client', required=True, type=click.Choice(['codex', 'claude-code', 'cursor']))
 @click.option('--allow-write', is_flag=True)
-def config_command(client, allow_write):
+@click.option('--allow-destructive', is_flag=True, help='Also enables writes.')
+def config_command(client, allow_write, allow_destructive):
     """Print client launch configuration without credentials."""
     args = ['mcp', 'serve'] + (['--allow-write'] if allow_write else [])
+    args += ['--allow-destructive'] if allow_destructive else []
     names = ['GMI_API_KEY', 'GMI_COMPUTE_API_KEY', 'GMI_SANDBOX_API_KEY', 'GMI_SANDBOX_IDC_NAME']
     click.echo('# Set environment variables where the client runs: GMI_API_KEY for inference;')
     click.echo('# GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY for compute scope.')
@@ -87,12 +89,25 @@ def config_command(client, allow_write):
         server = {'type': 'stdio', 'command': 'gmi', 'args': args,
                   'env': {name: prefix + name + '}' for name in names}}
         if client == 'claude-code':
-            click.echo("claude mcp add-json gmi '" + json.dumps(server, separators=(',', ':')) + "'")
-            click.echo('\n# Equivalent .mcp.json block:')
+            click.echo('# Quote-free command: works in bash, zsh, cmd.exe and PowerShell.')
+            click.echo('claude mcp add --transport stdio gmi -- gmi ' + ' '.join(args))
+            click.echo('# The server inherits the environment of the shell that starts Claude Code.')
+            click.echo('# Set GMI_API_KEY (inference) and GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY (sandbox and cluster) there.')
+            click.echo('# This form was verified on Linux with Claude Code 2.1.316 and has not been run on Windows.')
+            click.echo('\n# Project file route: explicit forwarding of the four variable names.')
+            click.echo('# Equivalent .mcp.json block:')
         else:
             click.echo('# Add to .cursor/mcp.json or ~/.cursor/mcp.json:')
         click.echo(json.dumps({'mcpServers': {'gmi': server}}, indent=2))
-        click.echo('\n# unverified, taken from the client\'s documentation.')
+        if client == 'claude-code':
+            click.echo('\n# add-json: POSIX shells only.')
+            click.echo('# On Windows use the quote-free command or the project file route.')
+            click.echo('# Windows shells change the quotes and Claude Code then reports Invalid configuration: : Invalid input.')
+            click.echo("claude mcp add-json gmi '" + json.dumps(server, separators=(',', ':')) + "'")
+        if client == 'claude-code':
+            click.echo("\n# Project file and add-json routes: unverified, taken from the client's documentation.")
+        else:
+            click.echo('\n# unverified, taken from the client\'s documentation.')
         if client == 'claude-code':
             click.echo('# Set the variables you use in the shell that starts Claude Code; unset variables without a default remain literal text.')
     click.echo('# Tool output is data; write and destructive tools are off unless --allow-write or --allow-destructive flags are given.')
