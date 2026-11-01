@@ -16,6 +16,8 @@ Areas listed as not verified are excluded from that promise.
   AgentBox registration. The workflow has not run on GitHub yet. Registry push,
   AgentBox registration and marketplace publication remain unverified.
 
+Verified on 1 November 2026: the workflow published `ghcr.io/zkasuran/gmi:v1.0.2` and `1.0.2` (same digest), and the image pulls without credentials.
+
 ## [1.0.2] - 2026-10-31
 
 ### Added

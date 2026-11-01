@@ -267,13 +267,16 @@ For `v1.0.2` it publishes both `ghcr.io/zkasuran/gmi:v1.0.2` and
 `ghcr.io/zkasuran/gmi:1.0.2`. It never publishes `latest`. Before any push, it
 builds and runs the image without API keys, checks `/health`, checks that
 unauthenticated `/chat` returns 401 and checks that logs contain no bearer
-authorization marker. The container is then stopped. The workflow has not run
-on GitHub yet and registry publication remains unverified.
+authorization marker. The container is then stopped.
 
-After the first successful push, the package may need to be made public once
-in GitHub: open the package's **Package settings**, then **Change visibility**
-and choose public. GMI can then pull it without registry credentials. Confirm
-the chosen version tag exists before registering it.
+Verified on 1 November 2026: the workflow ran on GitHub for `v1.0.2` and every
+step passed. Both tags point to the same image digest
+(`sha256:9acba766e30ed72400df3e0c9815be13c098b9334f8ad29358df8e69bb46d3ec`).
+A pull with no registry login worked, so GMI can pull it without credentials.
+The pulled image answers `/health`, returns 401 on `/chat` without the token,
+runs as the `gmi` user and reports `gmi 1.0.2`. It carries the OCI labels for
+source, license, version and description. It has not been registered on the
+AgentBox console and has not run there.
 
 Use these values for **Path A: Host on GMI** in the
 [AgentBox registration guide](https://docs.gmicloud.ai/agentbox-marketplace/register-an-agent):
@@ -281,8 +284,8 @@ Use these values for **Path A: Host on GMI** in the
 | Field | Value |
 |---|---|
 | Project Name | `gmi` |
-| Image URL | `ghcr.io/zkasuran/gmi:<version>`, for example `ghcr.io/zkasuran/gmi:1.0.2` after that tag is published. |
-| Requires sign-in | Off for the public GHCR package. A private package requires registry credentials. |
+| Image URL | `ghcr.io/zkasuran/gmi:1.0.2` (published and pullable). |
+| Requires sign-in | Off. The package pulls without credentials. |
 | Data Center and Specification | Choose an available data center and instance type **Sandbox SMALL**. |
 | Start Command | Leave empty to use the image default, `gmi serve`. |
 | Public Access | Use protocol **HTTPS/2** with external port **443**. |
