@@ -1,0 +1,110 @@
+name: Publish service image
+
+"on":
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Version tag to publish, such as v1.0.2
+        required: true
+        type: string
+  push:
+    tags:
+      - v*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-image-${{ inputs.ref && format('refs/tags/{0}', inputs.ref) || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out version
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Derive version tags
+        id: version
+        env:
+          SELECTED_REF: ${{ inputs.ref || github.ref }}
+        run: |
+          tag="${SELECTED_REF#refs/tags/}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9][A-Za-z0-9.-]*)?$ ]]; then
+            echo 'Select a version tag such as v1.0.2.' >&2
+            exit 1
+          fi
+          test "$(git rev-parse "refs/tags/$tag^{commit}")" = "$(git rev-parse HEAD)"
+          version="${tag#v}"
+          printf 'tag=%s\nversion=%s\n' "$tag" "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: gmi-smoke
+
+      - name: Smoke test service
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'docker rm -f gmi-smoke >/dev/null 2>&1 || true' EXIT
+          docker run --detach --name gmi-smoke -p 127.0.0.1:8080:8080 \
+            -e GMI_SERVE_TOKEN=ci-token gmi-smoke >/dev/null
+          deadline=$((SECONDS + 30))
+          healthy=false
+          while (( SECONDS < deadline )); do
+            if curl --fail --silent --max-time 1 http://127.0.0.1:8080/health \
+              | python3 -c 'import json, sys; sys.exit(json.load(sys.stdin) != {"status": "ok"})' 2>/dev/null; then
+              healthy=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$healthy" != true ]; then
+            echo 'Service did not become healthy within 30 seconds.' >&2
+            exit 1
+          fi
+          status=$(curl --silent --show-error --max-time 5 -o /dev/null -w '%{http_code}' \
+            -X POST -H 'Content-Type: application/json' -d '{"message":"hello"}' \
+            http://127.0.0.1:8080/chat)
+          test "$status" = 401
+          docker logs gmi-smoke > "$RUNNER_TEMP/gmi-smoke.log" 2>&1
+          if grep -q 'Bearer' "$RUNNER_TEMP/gmi-smoke.log"; then
+            echo 'Service logs contain a forbidden authorization marker.' >&2
+            exit 1
+          fi
+          docker stop gmi-smoke >/dev/null
+
+      - name: Build and push versioned image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/zkasuran/gmi:${{ steps.version.outputs.tag }}
+            ghcr.io/zkasuran/gmi:${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/zkasuran/gmi
+            org.opencontainers.image.description=Community CLI and HTTP chat service for GMI Cloud; not an official GMI product.
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}

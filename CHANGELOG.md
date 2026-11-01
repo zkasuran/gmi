@@ -5,6 +5,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 From 1.0.0 the documented commands follow [Semantic Versioning](https://semver.org/).
 Areas listed as not verified are excluded from that promise.
 
+## [Unreleased]
+
+### Added
+
+- A GitHub Actions workflow to build the service image, check health and access
+  control before pushing version tags to `ghcr.io/zkasuran/gmi` with the built-in
+  `GITHUB_TOKEN`. It never publishes a `latest` tag.
+- Offline workflow checks and GitHub Container Registry instructions for
+  AgentBox registration. The workflow has not run on GitHub yet. Registry push,
+  AgentBox registration and marketplace publication remain unverified.
+
 ## [1.0.2] - 2026-10-31
 
 ### Added
