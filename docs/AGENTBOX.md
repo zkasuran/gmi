@@ -241,8 +241,11 @@ docker build -t YOUR_REGISTRY/gmi-agentbox:day4 .
 docker push YOUR_REGISTRY/gmi-agentbox:day4
 ```
 
-The owner verified a local Docker build and run on 22 October. Registry push
-remains unverified. No registry credentials are available to this build.
+The owner verified a local Docker build and run on 22 October. A GitHub
+Actions workflow now publishes the image to `ghcr.io/zkasuran/gmi` (see the
+section on GitHub Container Registry below), so you do not need your own
+registry for the AgentBox registration. To use your own registry instead, run
+the two commands above.
 For a local container test, pass secrets through the runtime environment:
 
 ```sh
