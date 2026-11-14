@@ -87,7 +87,7 @@ What the posts said about the results, including the limits:
 >
 > <sub>@gmi_cloud, 26 Oct 2026 | [post](https://x.com/gmi_cloud/status/2114562602068267514)</sub>
 
-> What is not proven: GMI calls through Claude Code and Cursor remain unverified. Claude Code registration was verified on Linux with version 2.1.316 using a stand-in server. Claude Code on Windows has not been run. gmi serve runs from a Docker image locally but is not on the AgentBox marketplace yet. macOS and Windows are untested.
+> What is not proven: GMI calls through Claude Code and Cursor remain unverified. Claude Code registration was verified on Linux with version 2.1.316 using a stand-in server. Claude Code on Windows has not been run. gmi serve runs from a Docker image locally but is not on the AgentBox marketplace yet. On Windows the install and the offline test suite were run on 25 October 2026 (Windows 10, Python 3.11.5); the interactive session and live calls have not been run there. macOS is untested.
 >
 > <sub>@gmi_cloud, 26 Oct 2026 | [post](https://x.com/gmi_cloud/status/2114562603695694076)</sub>
 
@@ -846,7 +846,7 @@ The key is resolved as `--api-key`, then `GMI_API_KEY`, then the saved config.
 
 More fixes, including sandbox and MCP errors: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
-Platforms: developed and tested on Linux. macOS and Windows have not been tested.
+Platforms: developed and tested on Linux. On Windows the install and the offline test suite were run on 25 October 2026 (Windows 10, Python 3.11.5); the interactive session and live calls have not been run there, see [Install on Windows](#install-on-windows). macOS has not been tested.
 
 </details>
 
