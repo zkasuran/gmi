@@ -9,6 +9,29 @@ Areas listed as not verified are excluded from that promise.
 
 ### Added
 
+- `gmi sandbox snapshots create|list|get|delete` to save a running sandbox's
+  filesystem and `gmi sandbox create --snapshot ID` to start a sandbox from it.
+  This answers issue #6. Snapshot waits poll every five seconds and report the
+  service's failure code and reason.
+- `gmi sandbox pause` and `gmi sandbox resume` with `--wait`. Resume accepts
+  `--timeout`. `gmi sandbox get` shows snapshot and pause fields when present.
+- 15 new generated API commands and MCP tools from the refreshed sandbox spec.
+  MCP counts are now 39 tools by default, 89 with writes and 102 with
+  destructive operations. Four tools accept `idempotency_key`.
+
+### Changed
+
+- `specs/sandbox_api.yaml` refreshed from GMI on 15 November 2026. The manifest
+  now has 108 operations. Existing sandbox operations changed only additively.
+- The three new shell operations use the sandbox data plane token and are not
+  exposed as MCP tools, like exec and files.
+
+### Not verified
+
+- Snapshots, pause, resume and every new generated operation are tested offline
+  only. None has been run against the live API. Snapshot pricing is not in the
+  spec and gmi does not estimate it.
+
 - A GitHub Actions workflow to build the service image, check health and access
   control before pushing version tags to `ghcr.io/zkasuran/gmi` with the built-in
   `GITHUB_TOKEN`. It never publishes a `latest` tag.

@@ -468,6 +468,19 @@ gmi sandbox kill SANDBOX_ID --yes
 gmi sandbox run --image ubuntu:24.04 --yes -- uname -a
 ```
 
+Snapshots save a running sandbox's filesystem, including installed packages,
+so new sandboxes can start from it. Pause keeps a sandbox's memory and
+processes without using its runtime. These follow GMI's sandbox spec of
+15 November 2026 and are tested offline only. See
+[Snapshots, pause and resume](docs/AGENTBOX.md#snapshots-pause-and-resume).
+
+```sh
+gmi sandbox snapshots create SANDBOX_ID --name with-jq --wait --yes
+gmi sandbox create --snapshot SNAPSHOT_ID --wait --yes
+gmi sandbox pause SANDBOX_ID --wait --yes
+gmi sandbox resume SANDBOX_ID --wait --yes
+```
+
 The following stdout examples use offline test fixtures. Lists use tab-separated
 columns and detail blocks stay within 10 lines. Add `--json` for the existing
 machine-readable output. Template creation with `--wait` prints build progress
@@ -658,15 +671,16 @@ The core install stays light: `mcp tools` and `mcp config` work without the SDK.
 | Destructive | `--allow-destructive` | Call generated DELETE tools. Also enables writes. |
 | Curated | Each tool's read or write gate | Use handwritten inference and sandbox tools. Sandbox tools resolve connection secrets internally. One-shot run always attempts to kill its sandbox but keeps the reusable template. |
 
-There are 36 tools by default, 78 with writes and 90 with destructive operations.
+There are 39 tools by default, 89 with writes and 102 with destructive operations.
 Curated tools are included in these totals. Service and tool-name glob filters
 can reduce the surface. The launch flags are operator consent for subsequent
 calls; tools do not prompt on stdin.
 
-The MCP server never retries calls by itself. Only `sandbox_create_sandbox`
-and `sandbox_create_template` support `idempotency_key`; reuse the same value
+The MCP server never retries calls by itself. Only `sandbox_create_sandbox`,
+`sandbox_create_template`, `sandbox_create_sandbox_snapshot` and
+`sandbox_create_template_file` support `idempotency_key`; reuse the same value
 when retrying. `gmi mcp tools --allow-write --json` reports this flag per tool
-and a count of 2. All other writes are not idempotent. Check state with a get
+and a count of 4. All other writes are not idempotent. Check state with a get
 or list tool before repeating a write. See [Retries and idempotency](docs/MCP.md#retries-and-idempotency)
 for result metadata and sandbox cleanup limits.
 

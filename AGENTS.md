@@ -16,7 +16,7 @@ The full plan, all committed:
 2. Interactive `gmi chat` with slash commands: `/model`, `/models`, `/system`,
    `/clear`, `/save`, `/load`, `/help`, `/exit`.
 3. Full API coverage generated from GMI's four published OpenAPI specs
-   (93 operations: IAM 30, IDC 1, Sandbox 21, Cluster Engine 41).
+   (108 operations: IAM 30, IDC 1, Sandbox 36, Cluster Engine 41, recounted 2026-11-15).
    These counts change when GMI updates the specs, so recount before quoting them.
 4. `gmi sandbox` (GMI calls this AgentBox): create, exec, push/pull files, extend TTL, kill.
 5. `gmi mcp serve` (every operation as an MCP tool) and `gmi mcp login` to `mcp.gmicloud.ai/mcp`.
@@ -38,8 +38,8 @@ be finished the day before.
 
 ## Verified facts about the GMI APIs (checked 2026-10-21)
 
-- The vendored specs contain 93 operations: iam 30 (6 GET, 14 POST, 6 PATCH, 4 DELETE), idc 1 (1 GET), sandbox 21 (10 GET, 7 POST, 2 PATCH, 2 DELETE) and cluster 41 (18 GET, 13 POST, 4 PUT, 6 DELETE). Operation IDs exist for 90 operations. Tags are iam {invitations, me, oauth, organizations, users}, idc {idcs}, sandbox {Sandbox, Sandbox-Exec, Sandbox-Files, SandboxTemplate} and cluster {baremetals, containers, elastic-ips, firewalls, images, logs, templates, vpcs}.
-- Servers are iam and idc `https://console.gmicloud.ai/api/v1`, sandbox `https://console.gmicloud.ai/api/v2` and cluster `https://console.gmicloud.ai/api`. Eight operations have no auth, 77 use `bearerAuth`, one uses `bearerAPIKey`, two use `bearerEmailVerificationToken` and five sandbox data-plane operations use `sandboxAccessToken` in `X-Access-Token`. The inference key with scope `ie_model` is rejected by Sandbox and Cluster. Those services use a compute-scope key. Cluster write operations and operations that create GPU compute are untested and are not provisioned for this account.
+- The vendored specs contain 108 operations: iam 30 (6 GET, 14 POST, 6 PATCH, 4 DELETE), idc 1 (1 GET), sandbox 36 (14 GET, 16 POST, 3 PATCH, 3 DELETE; refreshed 2026-11-15) and cluster 41 (18 GET, 13 POST, 4 PUT, 6 DELETE). Operation IDs exist for 105 operations. Tags are iam {invitations, me, oauth, organizations, users}, idc {idcs}, sandbox {Sandbox, Sandbox-Exec, Sandbox-Files, Sandbox-Shell, SandboxSnapshot, SandboxTemplate} and cluster {baremetals, containers, elastic-ips, firewalls, images, logs, templates, vpcs}.
+- Servers are iam and idc `https://console.gmicloud.ai/api/v1`, sandbox `https://console.gmicloud.ai/api/v2` and cluster `https://console.gmicloud.ai/api`. Eight operations have no auth, 89 use `bearerAuth`, one uses `bearerAPIKey`, two use `bearerEmailVerificationToken` and eight sandbox data-plane operations (exec, files, shell) use `sandboxAccessToken` in `X-Access-Token`. The inference key with scope `ie_model` is rejected by Sandbox and Cluster. Those services use a compute-scope key. Cluster write operations and operations that create GPU compute are untested and are not provisioned for this account.
 
 - Inference is OpenAI-compatible. Base URL `https://api.gmi-serving.com/v1`.
   Auth: `Authorization: Bearer <API key>`. Chat: `POST /v1/chat/completions`
@@ -109,6 +109,23 @@ be finished the day before.
   `gmi serve` on the AgentBox marketplace, GMI injecting the runtime key, gateway
   access control, Verified approval and any Cluster write operation.
 
+## Snapshot, pause and resume facts (from the 2026-11-15 spec, offline only)
+
+- GMI's refreshed sandbox spec adds `/snapshots` and `POST /sandboxes/{id}/pause`
+  and `/resume`. A snapshot saves a running sandbox's filesystem only. A sandbox
+  created with `snapshot_id` boots fresh from that disk. `create-sandbox` takes
+  exactly one of `template_id` or `snapshot_id`. This answers issue #6: the
+  `sandbox` build source is lineage only and manual builds accept image or template.
+- Snapshot status is `creating`, `ready`, `error`, `deleting` or `delete_failed`.
+  A definitive capture failure returns 201 with status `error`, `failure_code`
+  and `status_reason`. Poll every five seconds. Deletion is asynchronous.
+- Pause and resume return 202 with the submitted state only. Poll the sandbox
+  for `paused` or `running`. A failed resume returns to `paused`. A paused
+  sandbox is reclaimed after `paused_expire_at`.
+- `gmi sandbox snapshots create|list|get|delete`, `gmi sandbox create --snapshot`,
+  `gmi sandbox pause` and `gmi sandbox resume` are tested offline only. None has
+  run against the live API.
+
 ## MCP facts (offline verified 2026-10-23)
 
 - `gmi mcp serve` uses the official optional `mcp==2.3.0` SDK over stdio.
@@ -117,11 +134,12 @@ be finished the day before.
   Official SDK client subprocess tests cover 2026-07-28 metadata requests and
   the older 2025-11-25 initialize handshake. Real agent clients are unverified.
 - `gmi mcp tools [--json]` needs no SDK or credentials. Current unfiltered counts:
-  default 36 read, 0 write, 0 destructive (3 curated; 36 total);
-  `--allow-write` 36 read, 42 write, 0 destructive (6 curated; 78 total);
-  `--allow-destructive` 36 read, 42 write, 12 destructive (6 curated; 90 total).
+  default 39 read, 0 write, 0 destructive (3 curated; 39 total);
+  `--allow-write` 39 read, 50 write, 0 destructive (6 curated; 89 total);
+  `--allow-destructive` 39 read, 50 write, 13 destructive (6 curated; 102 total).
+  Four tools accept `idempotency_key` (recounted 2026-11-15).
   Curated counts are subsets. Recompute after manifest changes.
-- Nine manifest operations are excluded: five sandbox data-plane operations,
+- Twelve manifest operations are excluded: eight sandbox data-plane operations,
   create-api-key, two email verification token operations and one IAM OAuth
   operation. Curated sandbox tools connect internally and never return access
   tokens. The default read set includes gmi_sandbox_get_file.
