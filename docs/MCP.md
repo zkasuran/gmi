@@ -44,26 +44,27 @@ gmi mcp config --client cursor
 
 ## Safety model and counts
 
-Counts below were copied from the tool on 23 October 2026. Curated is a subset
-of the read and write counts, not an additional class to sum.
+Counts below were copied from the tool on 15 November 2026, after the sandbox
+spec refresh. Curated is a subset of the read and write counts, not an
+additional class to sum. Releases up to 1.0.2 reported 36, 78 and 90 tools.
 
 | Launch flags | Read | Write | Destructive | Curated subset | Total | Idempotency key |
 |---|---:|---:|---:|---:|---:|---:|
-| Default | 36 | 0 | 0 | 3 | 36 | 0 |
-| `--allow-write` | 36 | 42 | 0 | 6 | 78 | 2 |
-| `--allow-destructive` | 36 | 42 | 12 | 6 | 90 | 2 |
+| Default | 39 | 0 | 0 | 3 | 39 | 0 |
+| `--allow-write` | 39 | 50 | 0 | 6 | 89 | 4 |
+| `--allow-destructive` | 39 | 50 | 13 | 6 | 102 | 4 |
 
 Exact command output:
 
 ```text
 gmi mcp tools
-Counts: read=36, write=0, destructive=0, curated=3, total=36, idempotency_key=0
+Counts: read=39, write=0, destructive=0, curated=3, total=39, idempotency_key=0
 
 gmi mcp tools --allow-write
-Counts: read=36, write=42, destructive=0, curated=6, total=78, idempotency_key=2
+Counts: read=39, write=50, destructive=0, curated=6, total=89, idempotency_key=4
 
 gmi mcp tools --allow-destructive
-Counts: read=36, write=42, destructive=12, curated=6, total=90, idempotency_key=2
+Counts: read=39, write=50, destructive=13, curated=6, total=102, idempotency_key=4
 ```
 
 | Class | Registration | Behavior |
@@ -73,12 +74,12 @@ Counts: read=36, write=42, destructive=12, curated=6, total=90, idempotency_key=
 | Destructive | `--allow-destructive` | Generated DELETE operations. May delete data or resources. |
 | Curated | Follows each tool's read or write class | Handwritten schemas that keep sandbox host and access token resolution inside the process. |
 
-The manifest has 93 operations. Nine are never exposed: five sandbox data-plane
-operations using `sandboxAccessToken`, `create-api-key`, two operations using
+The manifest has 108 operations. Twelve are never exposed: eight sandbox data-plane
+operations using `sandboxAccessToken` (exec, files and the three shell operations), `create-api-key`, two operations using
 `bearerEmailVerificationToken` and the IAM oauth operation. Raw data-plane
 operations need per-sandbox hosts and secrets that must not pass through the
 model. Credential creation and verification or OAuth token exchanges stay out
-of the tool surface. There are 84 eligible generated tools and six curated tools.
+of the tool surface. There are 96 eligible generated tools and six curated tools.
 Filters and permission gates remove tools from `tools/list`. Direct calls to
 unregistered tools fail with an error and an enabling flag or filter hint.
 
@@ -237,13 +238,14 @@ change was made.
 
 `gmi mcp tools --allow-write --json` computes key support from the manifest.
 Each tool has an `idempotency_key` boolean and the counts include the number of
-tools that support it. With the current manifest, two tools support a key:
-`sandbox_create_sandbox` and `sandbox_create_template`. All other write and
-destructive tools are not idempotent. The default read-only selection has zero
-key-supporting tools; both write-enabled selections have two, as checked on
-25 October 2026.
+tools that support it. With the current manifest, four tools support a key:
+`sandbox_create_sandbox`, `sandbox_create_template`, `sandbox_create_sandbox_snapshot`
+and `sandbox_create_template_file`. All other write and destructive tools are not
+idempotent. The default read-only selection has zero key-supporting tools; both
+write-enabled selections have four, as checked on 15 November 2026. Live duplicate
+recognition is verified only for the first two.
 
-For either creation tool, supply `idempotency_key` with 8 to 128 characters
+For any of these tools, supply `idempotency_key` with 8 to 128 characters
 using only letters, digits, dot, underscore and hyphen. Reuse the same value
 and the same arguments when retrying that call so GMI can recognise a duplicate.
 If omitted, gmi generates a UUID. Successful and failed tool results return the
