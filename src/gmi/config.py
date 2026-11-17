@@ -19,7 +19,8 @@ BUILTIN_DEFAULT_MODEL = "openai/gpt-6.1-sol"
 
 
 def config_path():
-    return Path.home() / ".config" / "gmi" / "config.toml"
+    home = os.environ.get("HOME")
+    return Path(home or Path.home()) / ".config" / "gmi" / "config.toml"
 
 
 def read_key():

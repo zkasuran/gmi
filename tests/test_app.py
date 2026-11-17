@@ -1,5 +1,6 @@
 """Terminal-independent command, conversation, and input checks."""
 
+import os
 import stat
 from io import StringIO
 from types import SimpleNamespace
@@ -84,7 +85,8 @@ def test_save_load_and_model_switch(tmp_path, monkeypatch):
     assert state.messages == [{'role': 'user', 'content': 'hello'}]
     assert state.model == BUILTIN_DEFAULT_MODEL
     name = state.save('round-trip')
-    assert stat.S_IMODE(session_path(name).stat().st_mode) == 0o600
+    if os.name != 'nt':  # Windows has no POSIX permission bits.
+        assert stat.S_IMODE(session_path(name).stat().st_mode) == 0o600
     restored = Conversation()
     restored.load(name)
     assert restored == state

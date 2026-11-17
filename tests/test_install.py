@@ -5,6 +5,9 @@ import subprocess
 import pytest
 
 
+# The tests run install.sh with /bin/sh and create symlinks, so they need a POSIX host.
+pytestmark = pytest.mark.skipif(not Path("/bin/sh").exists(), reason="install.sh tests need /bin/sh")
+
 SCRIPT = Path(__file__).resolve().parents[1] / "install.sh"
 BASE = "git+https://github.com/zkasuran/gmi@"
 
