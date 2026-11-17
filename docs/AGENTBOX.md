@@ -161,6 +161,84 @@ inspect it and kill it when finished. Exec prints stdout and stderr and returns
 the command's exit code. Pending executions are polled until terminal with a
 600 second deadline. A standalone exec timeout does not cancel the remote job.
 
+## Snapshots, pause and resume
+
+GMI's sandbox spec was refreshed on 15 November 2026. It adds durable
+snapshots, pause and resume. These commands follow that spec and are covered by
+offline tests only. None of them has been run against the live API.
+
+A snapshot saves the filesystem of a running sandbox. Packages you install
+inside a sandbox are kept, so this is how to turn a configured sandbox into a
+reusable starting point (issue #6). Running processes and memory are not kept:
+a sandbox created from a snapshot boots fresh from the saved disk. The source
+sandbox keeps running. GMI exposes this through `/snapshots` and
+`POST /sandboxes` with `snapshot_id`, not through the template build source.
+Its spec marks snapshot-created templates as not rebuildable.
+
+Pause keeps the sandbox ID, disk, memory and processes. A paused sandbox does
+not use its runtime budget, but GMI reclaims it with its disk when the
+retention window `paused_expire_at` ends. Resume is the only way to wake it.
+It costs runtime again and needs a fresh `/connect`, which exec and file
+commands already do on every call.
+
+```sh
+gmi sandbox exec SANDBOX_ID -- sh -c 'apt-get update && apt-get install -y jq'
+gmi sandbox snapshots create SANDBOX_ID --name with-jq --wait --yes
+gmi sandbox snapshots list --sandbox SANDBOX_ID --status ready
+gmi sandbox snapshots get SNAPSHOT_ID
+gmi sandbox create --snapshot SNAPSHOT_ID --timeout 300 --wait --yes
+gmi sandbox snapshots delete SNAPSHOT_ID --yes
+
+gmi sandbox pause SANDBOX_ID --wait --yes
+gmi sandbox resume SANDBOX_ID --timeout 600 --wait --yes
+```
+
+Example output in the format the offline tests check. Elapsed times vary.
+
+```text
+$ gmi sandbox snapshots create SANDBOX_ID --name with-jq --wait --yes
+capturing 0s
+capturing 5s
+ready: snapshot with-jq (SNAPSHOT_ID) in 10s
+
+$ gmi sandbox snapshots create SANDBOX_ID --yes
+created snapshot SNAPSHOT_ID, capture started
+
+$ gmi sandbox snapshots delete SNAPSHOT_ID --yes
+deleting snapshot SNAPSHOT_ID (accepted)
+
+$ gmi sandbox pause box --yes
+pausing sandbox box (accepted)
+
+$ gmi sandbox pause box --wait --yes
+paused sandbox box reclaimed after 2026-11-22T10:01:00Z
+
+$ gmi sandbox resume box --wait --yes
+resumed sandbox box ends 2026-11-15T10:05:00Z
+```
+
+- `sandbox create` takes exactly one source: a `TEMPLATE` argument or
+  `--snapshot ID`. Giving both or neither fails before any request.
+- Snapshot waits poll every five seconds with a 600 second default deadline.
+  They stop on `ready` and fail on `error`, `deleting` or `delete_failed` with
+  the service's `status_reason` and `failure_code`. GMI can return a failed
+  snapshot directly from the create call. gmi reports that failure at once.
+- Each snapshot create sends a new `Idempotency-Key`. Snapshot names are unique
+  within the organization across all IDCs. A failed capture clears its name.
+- Snapshot deletion is asynchronous. A snapshot still used by a sandbox cannot
+  be deleted and GMI returns 409 `Snapshot.HasDependencies`.
+- Pause and resume return the accepted state, not the outcome. `--wait` polls
+  `GET /sandboxes/{id}` until `paused` or `running`. A failed resume returns the
+  sandbox to `paused` with its files intact. gmi reports that and exits 1.
+  A platform deletion during a wait stops at once, as for create.
+- `resume --timeout` replaces the remaining runtime. Without it the runtime left
+  at the moment of the pause is kept.
+- `sandbox get` adds `snapshot`, `paused` and `reclaimed after` lines only when
+  the service returns those fields.
+- Snapshot creation, deletion, pause and resume require confirmation. Use
+  `--yes` without a terminal or with `--json`. Snapshot storage pricing is not
+  in the spec and gmi does not estimate it.
+
 ## Known platform billing deletion
 
 On 22 October 2026 the owner observed every sandbox being deleted by the

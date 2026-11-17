@@ -43,6 +43,11 @@ Counts: read=36, write=42, destructive=0, curated=6, total=78, idempotency_key=2
 Counts: read=36, write=42, destructive=12, curated=6, total=90, idempotency_key=2
 ```
 
+These counts come from gmi 1.0.2. After the 15 November 2026 sandbox spec refresh
+the same commands print 39, 89 and 102 tools with 4 idempotency-key tools. The new
+tools cover snapshots, pause, resume, template builds and sandbox egress rules.
+They follow the same read, write and destructive gates.
+
 By default the agent sees 36 read tools and nothing else. The write and delete tools are not listed at all, so the model cannot even try them.
 
 ## 4. Connect the agent (read-only first)

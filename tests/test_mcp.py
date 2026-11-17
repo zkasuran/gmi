@@ -68,7 +68,9 @@ def test_schemas_path_body_enum_and_annotations():
     assert 'Idempotency-Key' not in schema['properties']
     assert schema['properties']['body'] == create['request_body']['schema']
     assert 'body' in schema['required']
-    assert 'template_id' in schema['properties']['body']['required']
+    # The API takes exactly one source: template_id or snapshot_id.
+    sources = schema['properties']['body']['oneOf']
+    assert [branch['required'] for branch in sources] == [['template_id'], ['snapshot_id']]
     query = mcp.input_schema(operation('sandbox_get_template_build_logs'))
     assert query['properties']['level'] == {'type': 'string', 'enum': ['debug', 'info', 'warn', 'error']}
     rows = {row['name']: row for row in mcp.generated_tools()}
@@ -571,12 +573,12 @@ def test_no_manifest_body_still_allows_an_optional_free_object():
 
 
 def test_idempotency_schema_matches_manifest_and_retry_descriptions():
-    expected = {mcp.tool_name(op) for op in manifest()['operations']
-                if any(p['name'].lower() == 'idempotency-key' for p in op['header_parameters'])}
+    expected = {mcp.tool_name(op) for op in manifest()['operations'] if mcp.eligible(op)
+                and any(p['name'].lower() == 'idempotency-key' for p in op['header_parameters'])}
     rows = mcp.generated_tools() + mcp.curated_tools()
     actual = {row['name'] for row in rows if 'idempotency_key' in row['inputSchema']['properties']}
     assert actual == expected
-    assert len(actual) == 2
+    assert len(actual) == 4
     assert {row['name'] for row in rows if row['idempotency_key']} == expected
     assert all(isinstance(row['idempotency_key'], bool) for row in rows)
     for row in rows:
@@ -643,11 +645,14 @@ def test_idempotency_over_official_client_and_fake_http_server(idempotency_cloud
               '--allow-destructive', '--timeout', '0.1'],
         env={'HOME': str(tmp_path), 'GMI_COMPUTE_API_KEY': 'fake-compute',
              'GMI_MCP_TEST_MODE': '1', 'GMI_MCP_TEST_BASE': base})
-    keyed = [op for op in manifest()['operations']
-             if any(p['name'].lower() == 'idempotency-key' for p in op['header_parameters'])]
+    keyed = [op for op in manifest()['operations'] if mcp.eligible(op)
+             and any(p['name'].lower() == 'idempotency-key' for p in op['header_parameters'])]
     bodies = {
-        '/sandboxes': {'template_id': 't'},
-        '/templates': {'name': 'test', 'resources': {'type': 'preset', 'product': 'gmi.sandbox.small'}},
+        '/sandboxes': {'body': {'template_id': 't'}},
+        '/snapshots': {'body': {'sandbox_id': '00000000-0000-4000-8000-000000000000'}},
+        '/templates': {'body': {'name': 'test', 'resources': {'type': 'preset', 'product': 'gmi.sandbox.small'}}},
+        '/templates/{template_id}/files': {'template_id': 't', 'body': {
+            'name': 'context.tar', 'content_type': 'tar', 'sha256': '0' * 64, 'size_bytes': 1}},
     }
     warning = ('The request did not complete and the change may or may not have been made. '
                'Check the current state with a list or get tool before retrying.')
@@ -666,7 +671,7 @@ def test_idempotency_over_official_client_and_fake_http_server(idempotency_cloud
 
             for op in keyed:
                 name = mcp.tool_name(op)
-                arguments = {'body': bodies[op['path']]}
+                arguments = bodies[op['path']]
                 supplied = 'retry.Same_123-abc'
                 for _ in range(2):
                     result = await call(name, {**arguments, 'idempotency_key': supplied})
