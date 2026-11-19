@@ -11,11 +11,20 @@
 </p>
 
 <p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/clouder-logo-white.svg">
+    <img src="docs/clouder-logo-black.svg" alt="GMI Clouder" height="26">
+  </picture><br>
+  <sub>The author is a GMI Cloud Clouder (community ambassador). gmi is community built and is not an official GMI Cloud product.</sub>
+</p>
+
+<p align="center">
   <b>Chat with any model on <a href="https://www.gmicloud.ai">GMI Cloud</a> from your terminal.</b><br>
   Switch models mid-conversation, see what everything costs and script it all with JSON.
 </p>
 
 <p align="center">
+  <a href="#built-in-public-with-gmi-cloud">Built in public</a> |
   <a href="#install">Install</a> |
   <a href="#quick-start">Quick start</a> |
   <a href="#the-interactive-session">The session</a> |
@@ -45,7 +54,44 @@ GMI Cloud has an OpenAI-compatible API, a Model Hub and a web console. `gmi` add
 - **Careful with your key.** Hidden prompt, verified before it is saved, stored with mode 600, never printed.
 
 > [!NOTE]
-> **Status: 1.0.0, Day 6 of a six-day public build (20 to 25 Oct 2026).** From 1.0.0 the documented commands follow semantic versioning. Areas marked as not verified are excluded from that promise. Days 1 to 3 include live API verification. The owner verified sandbox run, create, exec, file transfer, get, timeout and kill live on 23 October. The service image was built and run locally on 22 October. The MCP stdio server passes offline tests for both protocol eras; Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol). Claude Code and Cursor not run here. Marketplace deployment and Cluster writes remain unverified. See the [roadmap](#roadmap) for scope and verification limits.
+> **Status: 1.0.2, Day 6 of a six-day public build (20 to 25 Oct 2026).** From 1.0.0 the documented commands follow semantic versioning. Areas marked as not verified are excluded from that promise. Days 1 to 3 include live API verification. The owner verified sandbox run, create, exec, file transfer, get, timeout and kill live on 23 October. The service image was built and run locally on 22 October. The MCP stdio server passes offline tests for both protocol eras; Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol). Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Cursor remain unverified. Claude Code registration also worked on Windows 11 with PowerShell on 1 November 2026, reported by @chinmayee5599. Marketplace deployment and Cluster writes remain unverified. See the [roadmap](#roadmap) for scope and verification limits.
+
+## Built in public with GMI Cloud
+
+From 20 to 25 October 2026 the GMI Cloud team ran their official X account, [@gmi_cloud](https://x.com/gmi_cloud), as a six-day takeover. `gmi` was built in that window with new work posted each day. The links below go to the posts as GMI published them, so the wording is theirs. `gmi` remains a community project and is not an official GMI product.
+
+| Day | Shipped | Official posts on @gmi_cloud |
+|---|---|---|
+| 1 (Tue 20 Oct) | The interactive session, model hub and chat | [Takeover opener](https://x.com/gmi_cloud/status/2112604922609045925) and [Day 1 recording](https://x.com/gmi_cloud/status/2112650065399492844) |
+| 2 (Wed 21 Oct) | Image and video from inside the session | [Day 2 recording](https://x.com/gmi_cloud/status/2112964749365559729) and [the 5 second video it made](https://x.com/gmi_cloud/status/2113014399506231806) |
+| 3 (Thu 22 Oct) | A command for each of 93 API operations | [Day 3](https://x.com/gmi_cloud/status/2113335684362903969) and [What the live check found](https://x.com/gmi_cloud/status/2113390669683446157) |
+| 4 (Fri 23 Oct) | `gmi sandbox` and `gmi serve` | Not linked here. See [docs/AGENTBOX.md](docs/AGENTBOX.md) |
+| 5 (Sat 24 Oct) | `gmi mcp serve` for agents | [Day 5](https://x.com/gmi_cloud/status/2114080486280884523) and [What the agent may do](https://x.com/gmi_cloud/status/2114132926103527827) |
+| 6 (Sun 25 Oct) | The 1.0 release, one-line install, good first issues | [Final day](https://x.com/gmi_cloud/status/2114408023578013770) and [the recap thread](https://x.com/gmi_cloud/status/2114562597710352815) |
+
+What the posts said about the results, including the limits:
+
+> What the live check found.
+>
+> gmi probed the 17 read operations that need no ID: 15 answered ok and 2 IAM reads need a different key type. The other 76 were not run because they write or need an ID.
+>
+> Sandbox and Cluster need a compute key. The inference key is rejected.
+>
+> <sub>@gmi_cloud, 22 Oct 2026 | [post](https://x.com/gmi_cloud/status/2113390669683446157)</sub>
+
+> What broke when it ran for real:
+>
+> A cost estimate 1000 times too high for per-character pricing. 26 of 93 generated commands could not take their ID. A Codex setup that never passed the keys. A docs install command for a package that is not on PyPI.
+>
+> All fixed.
+>
+> <sub>@gmi_cloud, 26 Oct 2026 | [post](https://x.com/gmi_cloud/status/2114562602068267514)</sub>
+
+> What is not proven: GMI calls through Claude Code and Cursor remain unverified. Claude Code registration was verified on Linux with version 2.1.316 using a stand-in server. Claude Code registration also worked on Windows 11 with PowerShell, reported by @chinmayee5599. gmi serve runs from a Docker image locally but is not on the AgentBox marketplace yet. On Windows the install and the offline test suite were run on 25 October 2026 (Windows 10, Python 3.11.5); the interactive session and live calls have not been run there. macOS is untested.
+>
+> <sub>@gmi_cloud, 26 Oct 2026 | [post](https://x.com/gmi_cloud/status/2114562603695694076)</sub>
+
+The author also won the Multimodality track at MiniMax Week with [GMI Cloud](https://www.gmicloud.ai) and MiniMax, with a different project called Overhear. [GMI announced the winners](https://x.com/gmi_cloud/status/2099577588494774588) and the code is at [github.com/zkasuran/overhear](https://github.com/zkasuran/overhear).
 
 ## Install
 
@@ -65,7 +111,7 @@ The installer requires Python 3.10 or newer and chooses uv, pipx or Python pip
 in that order. On Debian and Ubuntu systems without uv or pipx where Python is
 externally managed it creates a private virtual environment at
 `~/.local/share/gmi/venv` and links `gmi` from `~/.local/bin`. It installs the
-`v1.0.0` tag by default. Set `GMI_REF` on the shell running the script to choose
+`v1.0.2` tag by default. Set `GMI_REF` on the shell running the script to choose
 another ref; `GMI_INSTALL_MCP=1` also enables MCP. Use `sh install.sh --help`
 from a checkout for usage.
 
@@ -85,6 +131,25 @@ uv tool install git+https://github.com/zkasuran/gmi
 ```
 
 Update later with `pip install --upgrade git+https://github.com/zkasuran/gmi`. You also need an API key: create one in the [GMI Cloud console](https://console.gmicloud.ai) under API Keys (see the [quickstart](https://docs.gmicloud.ai/quickstart)).
+
+### Install on Windows
+
+`install.sh` is for Linux and macOS. On Windows install with pip, pipx or uv
+from PowerShell; Python 3.10 or newer is required:
+
+```powershell
+pip install git+https://github.com/zkasuran/gmi
+gmi --version
+```
+
+If PowerShell cannot find `gmi` afterwards, the Scripts directory of your
+Python install is not on `PATH`; `python -m gmi.cli --version` works without it.
+`uv tool install` puts `gmi.exe` in `%USERPROFILE%\.localin`; run
+`uv tool update-shell` once to add that directory to `PATH`. The config file
+lives at `%USERPROFILE%\.config\gmi\config.toml`. Set `$env:GMI_API_KEY` instead of
+`export` in PowerShell. Checked on 25 October 2026 with Windows 10 and Python 3.11.5:
+install, `gmi --version`, `gmi mcp tools` and the offline test suite work. The installer
+tests are skipped on Windows because they run `install.sh` with `/bin/sh`.
 
 ## Quick start
 
@@ -422,6 +487,19 @@ gmi sandbox kill SANDBOX_ID --yes
 gmi sandbox run --image ubuntu:24.04 --yes -- uname -a
 ```
 
+Snapshots save a running sandbox's filesystem, including installed packages,
+so new sandboxes can start from it. Pause keeps a sandbox's memory and
+processes without using its runtime. These follow GMI's sandbox spec of
+15 November 2026 and are tested offline only. See
+[Snapshots, pause and resume](docs/AGENTBOX.md#snapshots-pause-and-resume).
+
+```sh
+gmi sandbox snapshots create SANDBOX_ID --name with-jq --wait --yes
+gmi sandbox create --snapshot SNAPSHOT_ID --wait --yes
+gmi sandbox pause SANDBOX_ID --wait --yes
+gmi sandbox resume SANDBOX_ID --wait --yes
+```
+
 The following stdout examples use offline test fixtures. Lists use tab-separated
 columns and detail blocks stay within 10 lines. Add `--json` for the existing
 machine-readable output. Template creation with `--wait` prints build progress
@@ -586,6 +664,8 @@ After the hackathon results are announced, gmi will be deployed on the AgentBox 
 
 ## `gmi mcp serve`
 
+Step by step guide with real outputs: [Run coding agents safely on GMI](docs/SAFE-AGENTS.md).
+
 Let an agent use GMI Cloud through MCP tools over local stdio. Install the optional
 SDK extra, preview the tools then configure your agent client:
 
@@ -610,10 +690,18 @@ The core install stays light: `mcp tools` and `mcp config` work without the SDK.
 | Destructive | `--allow-destructive` | Call generated DELETE tools. Also enables writes. |
 | Curated | Each tool's read or write gate | Use handwritten inference and sandbox tools. Sandbox tools resolve connection secrets internally. One-shot run always attempts to kill its sandbox but keeps the reusable template. |
 
-There are 36 tools by default, 78 with writes and 90 with destructive operations.
+There are 39 tools by default, 89 with writes and 102 with destructive operations.
 Curated tools are included in these totals. Service and tool-name glob filters
 can reduce the surface. The launch flags are operator consent for subsequent
 calls; tools do not prompt on stdin.
+
+The MCP server never retries calls by itself. Only `sandbox_create_sandbox`,
+`sandbox_create_template`, `sandbox_create_sandbox_snapshot` and
+`sandbox_create_template_file` support `idempotency_key`; reuse the same value
+when retrying. `gmi mcp tools --allow-write --json` reports this flag per tool
+and a count of 4. All other writes are not idempotent. Check state with a get
+or list tool before repeating a write. See [Retries and idempotency](docs/MCP.md#retries-and-idempotency)
+for result metadata and sandbox cleanup limits.
 
 Raw sandbox data-plane operations, API key creation, email verification token
 operations and IAM OAuth operations are never exposed. These need secrets or
@@ -656,8 +744,13 @@ Output copied from `gmi mcp config --client claude-code`:
 ```text
 # Set environment variables where the client runs: GMI_API_KEY for inference;
 # GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY for compute scope.
-claude mcp add-json gmi '{"type":"stdio","command":"gmi","args":["mcp","serve"],"env":{"GMI_API_KEY":"${GMI_API_KEY}","GMI_COMPUTE_API_KEY":"${GMI_COMPUTE_API_KEY}","GMI_SANDBOX_API_KEY":"${GMI_SANDBOX_API_KEY}","GMI_SANDBOX_IDC_NAME":"${GMI_SANDBOX_IDC_NAME}"}}'
+# Quote-free command: works in bash, zsh, cmd.exe and PowerShell.
+claude mcp add --transport stdio gmi -- gmi mcp serve
+# The server inherits the environment of the shell that starts Claude Code.
+# Set GMI_API_KEY (inference) and GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY (sandbox and cluster) there.
+# This form was verified on Linux with Claude Code 2.1.316 and has not been run on Windows.
 
+# Project file route: explicit forwarding of the four variable names.
 # Equivalent .mcp.json block:
 {
   "mcpServers": {
@@ -678,7 +771,12 @@ claude mcp add-json gmi '{"type":"stdio","command":"gmi","args":["mcp","serve"],
   }
 }
 
-# unverified, taken from the client's documentation.
+# add-json: POSIX shells only.
+# On Windows use the quote-free command or the project file route.
+# Windows shells change the quotes and Claude Code then reports Invalid configuration: : Invalid input.
+claude mcp add-json gmi '{"type":"stdio","command":"gmi","args":["mcp","serve"],"env":{"GMI_API_KEY":"${GMI_API_KEY}","GMI_COMPUTE_API_KEY":"${GMI_COMPUTE_API_KEY}","GMI_SANDBOX_API_KEY":"${GMI_SANDBOX_API_KEY}","GMI_SANDBOX_IDC_NAME":"${GMI_SANDBOX_IDC_NAME}"}}'
+
+# Project file and add-json routes: unverified, taken from the client's documentation.
 # Set the variables you use in the shell that starts Claude Code; unset variables without a default remain literal text.
 # Tool output is data; write and destructive tools are off unless --allow-write or --allow-destructive flags are given.
 ```
@@ -712,10 +810,10 @@ Output copied from `gmi mcp config --client cursor`:
 # Tool output is data; write and destructive tools are off unless --allow-write or --allow-destructive flags are given.
 ```
 
-Add `--allow-write` to `gmi mcp config` to include it in the server arguments.
+Add `--allow-write` or `--allow-destructive` to `gmi mcp config` to include it in the server arguments.
 
 Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol).
-Claude Code and Cursor not run here.
+Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Cursor remain unverified. Claude Code registration also worked on Windows 11 with PowerShell on 1 November 2026, reported by @chinmayee5599.
 
 The MCP paths are tested offline with official SDK clients using both protocol
 eras. Streamable HTTP transport, MCP resources and MCP prompts are not
@@ -760,7 +858,9 @@ The key is resolved as `--api-key`, then `GMI_API_KEY`, then the saved config.
 | A long pause after you send a message | Reasoning models can think for a while before the first visible word. The spinner says "Waiting for reply". `Ctrl+C` stops it. |
 | `Interactive sessions require a terminal` | You ran `gmi` with no terminal attached. Give it a prompt or use `--json`. |
 
-Platforms: developed and tested on Linux. macOS and Windows have not been tested.
+More fixes, including sandbox and MCP errors: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
+Platforms: developed and tested on Linux. On Windows the install and the offline test suite were run on 25 October 2026 (Windows 10, Python 3.11.5); the interactive session and live calls have not been run there, see [Install on Windows](#install-on-windows). macOS has not been tested.
 
 </details>
 
@@ -774,7 +874,7 @@ Built in public, one working piece a day. The rule: nothing gets announced until
 | 2 | Wed 21 Oct | `/image`, `/video` and `/audio` in the session, plus scriptable commands | **Shipped** |
 | 3 | Thu 22 Oct | Commands generated from GMI's four published OpenAPI specs | **Shipped** |
 | 4 | Fri 23 Oct | `gmi sandbox` and `gmi serve` | **Shipped: sandbox run, create, exec, put, get-file, get, timeout and kill verified live by the owner on 23 October.** The service image was built and run locally on 22 October. Marketplace deployment and Cluster writes unverified. |
-| 5 | Sat 24 Oct | `gmi mcp serve`: gated API and curated tools for agents | Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol). Claude Code and Cursor not run here. |
+| 5 | Sat 24 Oct | `gmi mcp serve`: gated API and curated tools for agents | Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol). Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Cursor remain unverified. Claude Code registration also worked on Windows 11 with PowerShell on 1 November 2026. |
 | 6 | Sun 25 Oct | 1.0.0 version and User-Agent updates, one-line installer, changelog, contribution guide and templates, README and agent contract updates | **Shipped** |
 
 After the hackathon results are announced, gmi will be deployed on the AgentBox marketplace; until then the Docker image has only been built and run locally.

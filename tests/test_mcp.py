@@ -68,14 +68,16 @@ def test_schemas_path_body_enum_and_annotations():
     assert 'Idempotency-Key' not in schema['properties']
     assert schema['properties']['body'] == create['request_body']['schema']
     assert 'body' in schema['required']
-    assert 'template_id' in schema['properties']['body']['required']
+    # The API takes exactly one source: template_id or snapshot_id.
+    sources = schema['properties']['body']['oneOf']
+    assert [branch['required'] for branch in sources] == [['template_id'], ['snapshot_id']]
     query = mcp.input_schema(operation('sandbox_get_template_build_logs'))
     assert query['properties']['level'] == {'type': 'string', 'enum': ['debug', 'info', 'warn', 'error']}
     rows = {row['name']: row for row in mcp.generated_tools()}
     assert rows['sandbox_get_sandbox']['annotations'] == {
         'readOnlyHint': True, 'destructiveHint': False, 'idempotentHint': True, 'openWorldHint': True}
     assert rows['sandbox_delete_sandbox']['annotations']['destructiveHint'] is True
-    assert rows['sandbox_delete_sandbox']['annotations']['idempotentHint'] is True
+    assert rows['sandbox_delete_sandbox']['annotations']['idempotentHint'] is False
 
 
 @pytest.mark.parametrize('flags,methods,curated', [
@@ -101,7 +103,9 @@ def test_gating_and_exact_cli_counts_from_manifest(flags, methods, curated):
     counts['read'] += 3
     counts['write'] += len(curated) - 3
     assert report['counts'] == {**{kind: counts[kind] for kind in ('read', 'write', 'destructive')},
-                                'curated': len(curated), 'total': len(expected_names)}
+                                'curated': len(curated), 'total': len(expected_names),
+                                'idempotency_key': sum(any(p['name'].lower() == 'idempotency-key'
+                                                          for p in op['header_parameters']) for op in allowed)}
     for op in manifest()['operations']:
         if op['security_scheme'] in {'sandboxAccessToken', 'bearerEmailVerificationToken'} or op['name'] == 'create-api-key' or (op['service'] == 'iam' and op['group'] == 'oauth'):
             assert mcp.tool_name(op) not in expected_names
@@ -256,7 +260,9 @@ def test_no_pypi_only_mcp_install_commands_in_user_facing_files():
 
 
 @pytest.mark.parametrize('client', ['codex', 'claude-code', 'cursor'])
-@pytest.mark.parametrize('flags', [[], ['--allow-write']])
+@pytest.mark.parametrize('flags', [
+    [], ['--allow-write'], ['--allow-destructive'], ['--allow-write', '--allow-destructive'],
+])
 def test_config_has_no_credentials_and_preserves_write_flag(client, flags, monkeypatch):
     names = ['GMI_API_KEY', 'GMI_COMPUTE_API_KEY', 'GMI_SANDBOX_API_KEY', 'GMI_SANDBOX_IDC_NAME']
     for index, name in enumerate(names):
@@ -289,7 +295,26 @@ def test_config_has_no_credentials_and_preserves_write_flag(client, flags, monke
         assert block == {'mcpServers': {'gmi': expected}}
         assert "unverified, taken from the client's documentation." in result.output
         if client == 'claude-code':
-            command = next(line for line in result.output.splitlines() if line.startswith('claude '))
+            quote_free = next(line for line in result.output.splitlines()
+                              if line.startswith('claude mcp add --'))
+            assert quote_free == 'claude mcp add --transport stdio gmi -- gmi ' + ' '.join(args)
+            assert not any(quote in quote_free for quote in ("'", '"', '`'))
+            assert '# Quote-free command: works in bash, zsh, cmd.exe and PowerShell.' in result.output
+            assert '# The server inherits the environment of the shell that starts Claude Code.' in result.output
+            assert ('Set GMI_API_KEY (inference) and GMI_COMPUTE_API_KEY or '
+                    'GMI_SANDBOX_API_KEY (sandbox and cluster) there.') in result.output
+            assert ('This form was verified on Linux with Claude Code 2.1.316 '
+                    'and has not been run on Windows.') in result.output
+            project_label = '# Project file route: explicit forwarding of the four variable names.'
+            posix_label = '# add-json: POSIX shells only.'
+            assert result.output.index(quote_free) < result.output.index(project_label)
+            assert result.output.index(project_label) < result.output.index(marker)
+            assert result.output.index(snippet) < result.output.index(posix_label)
+            assert '# On Windows use the quote-free command or the project file route.' in result.output
+            assert ('Windows shells change the quotes and Claude Code then reports '
+                    'Invalid configuration: : Invalid input.') in result.output
+            command = next(line for line in result.output.splitlines() if line.startswith('claude mcp add-json '))
+            assert result.output.index(posix_label) < result.output.index(command)
             assert command.startswith("claude mcp add-json gmi '") and command.endswith("'")
             words = shlex.split(command)
             assert words[:4] == ['claude', 'mcp', 'add-json', 'gmi']
@@ -474,7 +499,7 @@ def test_curated_sandbox_run_exec_and_fresh_internal_connections(sandbox_cloud):
 def test_curated_sandbox_run_cleanup_on_execution_failure(sandbox_cloud):
     state = sandbox_cloud
     state['exec_failure'] = True
-    with pytest.raises(GMIError):
+    with pytest.raises(GMIError, match='The request did not complete and the change may or may not have been made'):
         mcp.execute_curated('gmi_sandbox_run', {'image': 'ubuntu:24.04', 'command': ['echo', 'hello']}, 60)
     assert state['calls'][-1].method == 'DELETE'
     assert state['calls'][-1].url.path.endswith('/sandboxes/box')
@@ -545,3 +570,177 @@ def test_no_manifest_body_still_allows_an_optional_free_object():
     schema = mcp.input_schema(operation('sandbox_get_sandbox'))
     assert schema['properties']['body'] == {'type': 'object'}
     assert 'body' not in schema['required']
+
+
+def test_idempotency_schema_matches_manifest_and_retry_descriptions():
+    expected = {mcp.tool_name(op) for op in manifest()['operations'] if mcp.eligible(op)
+                and any(p['name'].lower() == 'idempotency-key' for p in op['header_parameters'])}
+    rows = mcp.generated_tools() + mcp.curated_tools()
+    actual = {row['name'] for row in rows if 'idempotency_key' in row['inputSchema']['properties']}
+    assert actual == expected
+    assert len(actual) == 4
+    assert {row['name'] for row in rows if row['idempotency_key']} == expected
+    assert all(isinstance(row['idempotency_key'], bool) for row in rows)
+    for row in rows:
+        if row['name'] in expected:
+            schema = row['inputSchema']
+            assert 'idempotency_key' not in schema['required']
+            assert schema['properties']['idempotency_key']['description'] == (
+                'Reuse the same value when retrying this call so GMI can recognise a duplicate. '
+                'If omitted, gmi generates one and returns it in the result metadata.')
+            assert 'Pass the same idempotency_key when retrying.' in row['description']
+        if row['class'] != 'read':
+            assert ('Not idempotent unless it has an idempotency_key argument: '
+                    'check state before retrying.') in row['description']
+        if row['class'] != 'read':
+            assert row['annotations']['idempotentHint'] is False
+    run = next(row for row in rows if row['name'] == 'gmi_sandbox_run')
+    assert 'may have left a running sandbox or a template' in run['description']
+    assert 'sandbox_list_sandboxes' in run['description']
+
+
+@pytest.fixture
+def idempotency_cloud():
+    state = {'mode': 'success', 'calls': []}
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+        def handle_request(self):
+            if self.headers.get('Content-Length'):
+                self.rfile.read(int(self.headers['Content-Length']))
+            state['calls'].append((self.command, self.path, dict(self.headers)))
+            mode = state['mode']
+            if mode == 'network':
+                self.close_connection = True
+                return
+            if mode == 'timeout':
+                threading.Event().wait(0.3)
+                self.close_connection = True
+                return
+            body = json.dumps({'id': 'created', 'message': 'service response'}).encode()
+            self.send_response(int(mode) if mode.isdigit() else 200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        do_POST = do_GET = do_DELETE = handle_request
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f'http://127.0.0.1:{server.server_port}', state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize('protocol_mode', ['2026-07-28', 'legacy'])
+def test_idempotency_over_official_client_and_fake_http_server(idempotency_cloud, tmp_path, protocol_mode):
+    from mcp.client import Client
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+    base, state = idempotency_cloud
+    params = StdioServerParameters(command=sys.executable,
+        args=['-c', 'from gmi.cli import main; main()', 'mcp', 'serve',
+              '--allow-destructive', '--timeout', '0.1'],
+        env={'HOME': str(tmp_path), 'GMI_COMPUTE_API_KEY': 'fake-compute',
+             'GMI_MCP_TEST_MODE': '1', 'GMI_MCP_TEST_BASE': base})
+    keyed = [op for op in manifest()['operations'] if mcp.eligible(op)
+             and any(p['name'].lower() == 'idempotency-key' for p in op['header_parameters'])]
+    bodies = {
+        '/sandboxes': {'body': {'template_id': 't'}},
+        '/snapshots': {'body': {'sandbox_id': '00000000-0000-4000-8000-000000000000'}},
+        '/templates': {'body': {'name': 'test', 'resources': {'type': 'preset', 'product': 'gmi.sandbox.small'}}},
+        '/templates/{template_id}/files': {'template_id': 't', 'body': {
+            'name': 'context.tar', 'content_type': 'tar', 'sha256': '0' * 64, 'size_bytes': 1}},
+    }
+    warning = ('The request did not complete and the change may or may not have been made. '
+               'Check the current state with a list or get tool before retrying.')
+    async def exercise():
+        @asynccontextmanager
+        async def transport():
+            async with stdio_client(params) as streams:
+                yield streams
+        async with Client(transport(), mode=protocol_mode, read_timeout_seconds=15, cache=None) as client:
+            async def call(name, arguments, mode='success', sent=True):
+                state['mode'] = mode
+                before = len(state['calls'])
+                result = await client.call_tool(name, arguments)
+                assert len(state['calls']) == before + int(sent)
+                return result
+
+            for op in keyed:
+                name = mcp.tool_name(op)
+                arguments = bodies[op['path']]
+                supplied = 'retry.Same_123-abc'
+                for _ in range(2):
+                    result = await call(name, {**arguments, 'idempotency_key': supplied})
+                    assert not result.is_error
+                    assert result.meta['gmi/idempotency_key'] == supplied
+                    assert state['calls'][-1][2]['Idempotency-Key'] == supplied
+                result = await call(name, arguments)
+                generated = result.meta['gmi/idempotency_key']
+                assert str(UUID(generated)) == generated
+                assert state['calls'][-1][2]['Idempotency-Key'] == generated
+                for invalid in ('', 'short', 'x' * 129, 'has spaces', 'nonascii-é', 'linebreak\n', 123, None):
+                    result = await call(name, {**arguments, 'idempotency_key': invalid}, sent=False)
+                    assert result.is_error
+                    assert ('8 to 128 characters using only letters, digits, dot, underscore and hyphen'
+                            in result.content[0].text)
+                for boundary in ('x' * 8, 'x' * 128):
+                    result = await call(name, {**arguments, 'idempotency_key': boundary})
+                    assert not result.is_error
+                    assert state['calls'][-1][2]['Idempotency-Key'] == boundary
+                for mode in ('network', 'timeout', '500', '503'):
+                    for key_args in ({}, {'idempotency_key': supplied}):
+                        result = await call(name, {**arguments, **key_args}, mode)
+                        assert result.is_error
+                        used = result.meta['gmi/idempotency_key']
+                        assert state['calls'][-1][2]['Idempotency-Key'] == used
+                        if key_args:
+                            assert used == supplied
+                        else:
+                            assert str(UUID(used)) == used
+                        text = result.content[0].text
+                        assert warning in text
+                        assert f'To retry safely, call again with idempotency_key set to {used}.' in text
+                result = await call(name, arguments, '400')
+                assert result.is_error
+                assert result.meta['gmi/idempotency_key'] == state['calls'][-1][2]['Idempotency-Key']
+                # Failures before HTTP still retain the prepared key.
+                result = await call(name, {'idempotency_key': supplied}, sent=False)
+                assert result.is_error and result.meta['gmi/idempotency_key'] == supplied
+
+            for name, arguments in (
+                    ('sandbox_set_sandbox_timeout', {'id': 'box', 'body': {'timeout': 60}}),
+                    ('sandbox_delete_sandbox', {'id': 'box'})):
+                for mode in ('network', 'timeout', '500'):
+                    result = await call(name, arguments, mode)
+                    assert result.is_error
+                    assert warning in result.content[0].text
+                    assert 'To retry safely' not in result.content[0].text
+                    assert 'gmi/idempotency_key' not in (result.meta or {})
+            result = await call('sandbox_get_sandbox', {'id': 'box'}, 'network')
+            assert result.is_error
+            assert 'check connectivity and retry.' in result.content[0].text
+            assert warning not in result.content[0].text
+    asyncio.run(exercise())
+
+
+def test_curated_run_failure_warns_about_leftovers_without_credentials(tmp_path):
+    from mcp.client import Client
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+    params = StdioServerParameters(command=sys.executable,
+        args=['-c', 'from gmi.cli import main; main()', 'mcp', 'serve', '--allow-write'],
+        env={'HOME': str(tmp_path)})
+    async def exercise():
+        @asynccontextmanager
+        async def transport():
+            async with stdio_client(params) as streams:
+                yield streams
+        async with Client(transport(), read_timeout_seconds=15, cache=None) as client:
+            result = await client.call_tool('gmi_sandbox_run', {'image': 'ubuntu', 'command': ['true']})
+            assert result.is_error
+            assert 'may have left a running sandbox or a template' in result.content[0].text
+            assert 'sandbox_list_sandboxes' in result.content[0].text
+    asyncio.run(exercise())

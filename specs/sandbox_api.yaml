@@ -1,11 +1,11 @@
 # Sandbox subset of the business-service API spec (docs/openapi.yaml), maintained by hand in this repo.
 # When the source spec changes, re-derive this file from the sandbox-tagged operations and keep it in sync,
-# but strip internal implementation references that are fine in the internal contract but do not belong in
-# customer-facing docs.
+# but strip internal implementation references
+# that are fine in the internal contract but do not belong in customer-facing docs.
 openapi: 3.0.3
 info:
   title: GMI Sandbox API
-  description: 'REST API for GMI Sandbox: create isolated execution environments from templates, manage
+  description: 'REST API for GMI Sandbox: create isolated execution environments from templates or durable snapshots, manage
     their lifecycle on the control plane, and run commands or transfer files through each sandbox''s own
     data plane.'
   contact:
@@ -20,12 +20,27 @@ tags:
   description: 'Sandbox instance lifecycle management (Sandbox v2, /api/v2/sandboxes)
 
     '
+- name: SandboxSnapshot
+  description: Durable sandbox snapshot management (Sandbox v2, `/api/v2/snapshots`)
 - name: SandboxTemplate
   description: Sandbox template management (Sandbox v2, `/api/v2/templates`)
 - name: Sandbox-Exec
   description: 'Sandbox execution data plane (accessed via the sandbox host and sandbox access token).
     These endpoints are not under the control plane''s `/api/v2` path; clients connect directly to `https://{sandbox_key}.{domain}`
     and authenticate with `X-Access-Token`.
+
+    '
+- name: Sandbox-Shell
+  description: 'Sandbox interactive terminal (PTY) data plane. **These endpoints are not under `/api/v2`**:
+    clients connect directly to `https://{sandbox_key}.{domain}` and authenticate with `X-Access-Token`.
+    `{sandbox_key}`, `{domain}` and the `X-Access-Token` value are the `sandbox_key`, `domain` and `sandbox_access_token`
+    returned by the control-plane create/connect endpoints; no extra endpoint is needed.
+
+
+    Each sandbox has exactly **one logical shell session** and at most **one active WebSocket connection**
+    at a time (a second concurrent attach is refused at handshake with `409`). Disconnecting does not
+    destroy the shell — re-attaching resumes the same session; only `POST /shell/control` with `action=close`
+    destroys it.
 
     '
 - name: Sandbox-Files
@@ -57,12 +72,18 @@ paths:
       tags:
       - Sandbox
       summary: Create a sandbox
-      description: 'Creates a sandbox from a `template_id`.
+      description: 'Creates a sandbox from exactly one source: `template_id` or a ready `snapshot_id`.
 
 
         Compute resources (CPU / memory / disk / architecture) are inherited from the snapshot of the
-        selected Template Build. They are fixed when the Template is built and cannot be overridden at
-        creation time.
+        selected Template Build or durable snapshot. They are fixed at capture time.
+        A snapshot launch is a cold start with a new sandbox identifier; network and lifecycle settings
+        come from this create request.
+
+        Snapshot launches return 409 `Snapshot.NotReady` if the snapshot is not ready
+        or becomes unavailable for launch before creation is accepted. If snapshot
+        launches are unsupported for the selected sandbox configuration, the request
+        returns 422 `Snapshot.UnsupportedOnProvider`.
 
 
         Idempotency: pass an explicit `Idempotency-Key` request header as the idempotency key (unrelated
@@ -109,21 +130,49 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          description: 'State conflict (`Resource.StateConflict` or an operation-specific code), or the
+            selected IDC is under maintenance (`IDC.UnderMaintenance`): write operations are rejected
+            until the IDC is usable again. Read operations are unaffected.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '429':
-          $ref: '#/components/responses/QuotaExceeded'
+          description: |
+            Capacity or concurrency limit reached. `Resource.QuotaExceeded` means a live quota (instances /
+            instance_type / vcpu) is exhausted and needs a quota change; `details` carries resource_type /
+            idc_name / quota_name / quota_value / quota / used / requested. `RateLimit.Exceeded` has two sources:
+            the organization already has its maximum number of sandboxes being created in this IDC
+            (`details.quota_name` = `concurrent_creates`, same `details` shape, and a `Retry-After` header in
+            seconds: wait that long and retry), or the platform is temporarily at its capacity for starting sandboxes (no `details`,
+            no `Retry-After`: retry shortly). Tell them apart by `details.quota_name` or `Retry-After`.
+          headers:
+            Retry-After:
+              description: Only on the concurrent-create limit (details.quota_name = concurrent_creates); suggested wait before retrying, in seconds.
+              schema: { type: integer, example: 2 }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
     get:
       tags:
       - Sandbox
       summary: List active sandboxes
       description: 'Returns sandboxes that are still actionable or still worth watching: `provisioning`,
-        `running`, `updating`, `checkpointing`, plus the terminal failure state `failed`. Instances in
-        transitional states do not disappear from the list while an operation is in flight. Results are
-        ordered by `started_at` descending; pagination is applied after filtering.
+        `running`, `updating`, `checkpointing`, `pausing`, `paused`, `resuming`, plus the terminal failure
+        state `failed`. Instances in transitional states do not disappear from the list while an operation
+        is in flight, and a paused instance stays visible for its whole retention window (`paused_expire_at`).
+        Results are ordered by `started_at` descending; pagination is applied after filtering.
 
 
         The `state` filter takes external states; the server maps them back to internal ones. `running`
@@ -138,7 +187,10 @@ paths:
       - $ref: '#/components/parameters/IdcNameQueryParam'
       - name: state
         in: query
-        description: Filter by external state. Repeatable; multiple values are OR-ed.
+        description: >-
+          Filter by external state. Repeatable; multiple values are OR-ed. When omitted, all active
+          instances and `failed` ones are returned; `deleted` records are returned only when
+          requested explicitly. `deleting` is not an accepted filter value.
         required: false
         schema:
           type: array
@@ -147,7 +199,11 @@ paths:
             enum:
             - provisioning
             - running
+            - pausing
+            - paused
+            - resuming
             - failed
+            - deleted
       - name: metadata[key]
         in: query
         description: 'Filter by customer metadata key/value, e.g. `metadata[job_id]=job-9182`. Repeatable;
@@ -170,8 +226,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
   /executions:
     servers:
     - url: https://{sandbox_key}.{domain}
@@ -203,7 +263,18 @@ paths:
 
         When `wait=true`, the server waits for a terminal result for at most
 
-        `wait_timeout_seconds` seconds; a timeout returns `202` without canceling the execution.
+        `wait_timeout_seconds` seconds; a timeout returns `202` without cancelling the execution.
+
+        Cancelling an execution, or reaching its timeout, stops the command and every process it
+        started: all processes in the command''s process group receive SIGTERM and then SIGKILL, so a
+        pipeline or `bash -c "a; b"` leaves nothing behind. A process that deliberately leaves the group
+        (for example with `setsid`) is not stopped. A command that exits on its own does not stop the
+        background processes it started, so a server started with `nohup app > app.log 2>&1 &` keeps
+        running; redirect the output of such a process, because the execution only ends once the
+        command''s stdout and stderr are closed. Pausing the sandbox does not end the execution; the
+        time spent paused still counts toward the execution''s timeout.
+
+        The request body is limited to 1 MiB. Unknown query parameters are rejected with 400. A sandbox allows at most 10 non-terminal executions at the same time; further requests return 429 `Execution.ConcurrencyLimitExceeded` until one completes.
 
         '
       operationId: createSandboxExecution
@@ -223,6 +294,7 @@ paths:
       - $ref: '#/components/parameters/SandboxExecRequestIDParam'
       - $ref: '#/components/parameters/SandboxExecWaitParam'
       - $ref: '#/components/parameters/SandboxExecWaitTimeoutParam'
+      - $ref: '#/components/parameters/SandboxExecIdempotencyKeyParam'
       requestBody:
         required: true
         content:
@@ -253,8 +325,12 @@ paths:
           $ref: '#/components/responses/SandboxExecBadRequest'
         '401':
           $ref: '#/components/responses/SandboxExecUnauthorized'
+        '409':
+          $ref: '#/components/responses/SandboxExecRuntimeNotRunning'
         '429':
           $ref: '#/components/responses/SandboxExecRateLimited'
+        '503':
+          $ref: '#/components/responses/SandboxExecUnavailable'
         '500':
           $ref: '#/components/responses/SandboxExecInternalError'
   /executions/{execution_id}:
@@ -301,14 +377,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SandboxExecResultResponse'
-        '400':
-          $ref: '#/components/responses/SandboxExecBadRequest'
         '401':
           $ref: '#/components/responses/SandboxExecUnauthorized'
         '404':
           $ref: '#/components/responses/SandboxExecNotFound'
+        '409':
+          $ref: '#/components/responses/SandboxExecRuntimeNotRunning'
         '429':
           $ref: '#/components/responses/SandboxExecRateLimited'
+        '503':
+          $ref: '#/components/responses/SandboxExecUnavailable'
         '500':
           $ref: '#/components/responses/SandboxExecInternalError'
   /executions/{execution_id}/cancel:
@@ -332,9 +410,13 @@ paths:
       tags:
       - Sandbox-Exec
       summary: Cancel a sandbox execution
-      description: 'Requests cancellation of a non-terminal execution. Cancellation is idempotent:
+      description: 'Requests cancellation of a non-terminal execution. The call returns `202` once cancellation is accepted; the execution then moves to `cancelling` and
+        finally `cancelled`. Cancellation is not idempotent: cancelling an execution that is already
+        cancelled, being cancelled, or finished returns `409` (`Execution.AlreadyCancelled`,
+        `Execution.CancelInProgress` or `Execution.AlreadyCompleted`).
 
-        repeated calls return the terminal canceled result once cancellation completes.
+
+        The request must have an empty body; any non-empty body returns 400 `Execution.InvalidRequest`.
 
         '
       operationId: cancelSandboxExecution
@@ -354,12 +436,6 @@ paths:
       - $ref: '#/components/parameters/SandboxExecExecutionIDParam'
       - $ref: '#/components/parameters/SandboxExecRequestIDParam'
       responses:
-        '200':
-          description: Execution was already canceled and is now returned as terminal.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SandboxExecResultResponse'
         '202':
           description: Cancellation accepted and is being processed.
           content:
@@ -367,7 +443,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/SandboxExecAcceptedResponse'
         '400':
-          $ref: '#/components/responses/SandboxExecBadRequest'
+          description: >-
+            The request carries a body. This endpoint takes none: any non-empty request body, whatever its `Content-Type`, is rejected with `Execution.InvalidRequest`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxExecErrorResponse'
         '401':
           $ref: '#/components/responses/SandboxExecUnauthorized'
         '404':
@@ -376,15 +457,372 @@ paths:
           $ref: '#/components/responses/SandboxExecConflict'
         '429':
           $ref: '#/components/responses/SandboxExecRateLimited'
+        '503':
+          $ref: '#/components/responses/SandboxExecUnavailable'
         '500':
           $ref: '#/components/responses/SandboxExecInternalError'
+  /shell:
+    post:
+      tags:
+        - Sandbox-Shell
+      summary: Launch the sandbox interactive shell
+      description: |
+        Ensures the sandbox's single logical shell (PTY) session exists. The call is
+        idempotent: if the shell already exists, it returns `200` with the current
+        status instead of creating a duplicate. The effective URL is the sandbox
+        data-plane host (`https://{sandbox_key}.{domain}`; both values, like the
+        `X-Access-Token` value, come from the control-plane create/connect response).
+        The endpoint does not include the control-plane `/api/v2` prefix.
+
+        The request body must be empty or `{}`; unknown fields are rejected with
+        `400 Shell.InvalidRequest`.
+
+        On `200`, `connect_url` is the **relative** path of the WebSocket attach
+        endpoint. The full attach address is
+        `wss://{sandbox_key}.{domain}{connect_url}` — the same host this request was
+        sent to, with the scheme switched to `wss`.
+
+        A `202` with `code=Shell.Creating` means another request is currently
+        creating the shell; retry `POST /shell` shortly — the retry never creates a
+        duplicate PTY.
+      operationId: launchSandboxShell
+      servers:
+        - url: https://{sandbox_key}.{domain}
+          description: Sandbox data-plane host
+          variables:
+            sandbox_key:
+              default: sandbox-key
+              description: Data-plane addressing key (`sandbox_key` from the control-plane response).
+            domain:
+              default: sandbox.example.com
+              description: Sandbox data-plane domain from the control-plane response.
+      security:
+        - sandboxAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/SandboxShellRequestIDParam'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              description: |
+                Empty object. Any unknown field is rejected with `400 Shell.InvalidRequest`.
+            example: {}
+      responses:
+        '200':
+          description: |
+            The shell exists (created by this call, or already present).
+            `status=ready` means the PTY exists and can be attached;
+            `status=attached` means the shell exists **and** currently has an
+            active WebSocket connection (a second attach would get `409`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellLaunchResponse'
+              example:
+                request_id: "req-7f3c"
+                sandbox_key: "sandbox-key"
+                status: ready
+                connect_url: /shell/connect
+        '202':
+          description: |
+            Another request is currently creating the shell (`Shell.Creating`).
+            Retry `POST /shell` shortly; the launch is idempotent and a retry
+            never creates a duplicate PTY.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellCreatingResponse'
+              example:
+                request_id: "req-7f3c"
+                sandbox_key: "sandbox-key"
+                status: creating
+                code: Shell.Creating
+        '400':
+          $ref: '#/components/responses/SandboxShellBadRequest'
+        '401':
+          $ref: '#/components/responses/SandboxShellUnauthorized'
+        '409':
+          description: |
+            State conflict, one of:
+            - `Shell.RuntimeNotRunning`: the sandbox is not running (for example it is
+              paused and cannot be resumed right now, or it is still changing state).
+            - `Shell.Closing`: the shell is being torn down; retry `POST /shell` shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+        '502':
+          description: |
+            `Shell.CreateFailed`: the shell could not be created in the selected IDC.
+            Retrying later starts a fresh session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+        '503':
+          description: |
+            `Shell.ProviderUnavailable` or `Shell.StoreUnavailable`: the shell state could not be
+            determined. Safe to retry — a retry never creates a duplicate PTY.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+        '500':
+          description: |
+            `Shell.InternalError`: unexpected server-side failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+
+  /shell/connect:
+    get:
+      tags:
+        - Sandbox-Shell
+      summary: Attach to the sandbox shell (WebSocket)
+      description: |
+        WebSocket handshake — **not a normal GET**. Code generators produce no
+        usable client for this operation (see `x-websocket`); consumers use a
+        WebSocket library instead. The address is composed from the `POST /shell`
+        response: `wss://{sandbox_key}.{domain}{connect_url}` — the same
+        data-plane host, scheme `wss`.
+
+        The client sends the standard upgrade headers (`Upgrade: websocket`,
+        `Connection: Upgrade`, plus the `Sec-WebSocket-*` headers WebSocket
+        libraries add automatically) together with the same `X-Access-Token`
+        used by the other data-plane endpoints. When a browser sends an `Origin`
+        header, it must be on the server allowlist, otherwise the handshake is
+        refused with `403`.
+
+        After the `101` upgrade the connection switches to WebSocket framing:
+
+        - **BINARY frames only.** client→server frames carry raw terminal input
+          bytes; server→client frames carry raw terminal output bytes (ANSI
+          escape sequences included, xterm.js-compatible).
+        - Text frames are a protocol violation: the server drops the connection.
+        - **No JSON messages in-band.** Resize and close go through
+          `POST /shell/control`, never over the WebSocket.
+        - At most **one active connection per sandbox**; a second concurrent
+          attach is refused at handshake time with `409`.
+        - Disconnecting keeps the shell alive — reattaching resumes the same
+          session. Only `POST /shell/control` with `action=close` destroys it.
+
+        Pre-upgrade errors are returned as plain HTTP responses (see below).
+      operationId: attachSandboxShell
+      x-websocket: true
+      servers:
+        - url: https://{sandbox_key}.{domain}
+          description: Sandbox data-plane host
+          variables:
+            sandbox_key:
+              default: sandbox-key
+              description: Data-plane addressing key (`sandbox_key` from the control-plane response).
+            domain:
+              default: sandbox.example.com
+              description: Sandbox data-plane domain from the control-plane response.
+      security:
+        - sandboxAccessToken: []
+      responses:
+        '101':
+          description: |
+            Handshake succeeded. The connection is now a WebSocket carrying raw
+            terminal bytes in BINARY frames; see the operation description for
+            the framing protocol. If attaching to the shell fails after the upgrade,
+            the server closes the WebSocket with close code `1011` and reason
+            `attach failed`.
+        '400':
+          description: |
+            `Shell.InvalidRequest`: required WebSocket upgrade headers
+            (`Upgrade: websocket`, `Connection: Upgrade`) are missing or malformed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+        '401':
+          $ref: '#/components/responses/SandboxShellUnauthorized'
+        '403':
+          description: |
+            An `Origin` header was present but is not on the server allowlist
+            (browser clients only; non-browser clients normally send no `Origin`). The error code is `Shell.InvalidRequest`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+        '404':
+          $ref: '#/components/responses/SandboxShellNotFound'
+        '409':
+          description: |
+            Attach conflict, one of:
+            - `Shell.AlreadyAttached`: another WebSocket connection is already
+              active (at most one per sandbox).
+            - `Shell.Creating`: a launch is still in progress; retry shortly.
+            - `Shell.Closing`: the shell is being torn down; launch a new one
+              with `POST /shell` afterwards.
+            - `Shell.CreateFailed`: the previous launch failed; launch it again with
+              `POST /shell`.
+            - `Shell.RuntimeNotRunning`: the sandbox is not running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+              example:
+                code: Shell.AlreadyAttached
+                message: "shell already has an active connection"
+                request_id: "req-7f3c"
+        '500':
+          description: |
+            `Shell.InternalError`: unexpected server-side failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+        '503':
+          description: |
+            Temporarily unavailable, one of `Shell.StoreUnavailable` or
+            `Shell.ProviderUnavailable`. Safe to retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+
+  /shell/control:
+    post:
+      tags:
+        - Sandbox-Shell
+      summary: Control the sandbox shell (resize / close)
+      description: |
+        Out-of-band control channel for the shell. Control commands never travel
+        over the WebSocket; this is a plain HTTP call and works from any replica.
+
+        - `action=resize` applies a new terminal size to the live PTY. It
+          **requires an active attach** (otherwise `409 Shell.NotAttached`).
+        - `action=close` **irrevocably terminates** the shell: the PTY is killed,
+          the state is deleted, and any existing WebSocket is severed within
+          about one second. The old shell can never be re-attached; the next
+          `POST /shell` creates a brand-new session. Close does **not** require
+          an active connection.
+
+        Unknown `action` values or extra fields are rejected with
+        `400 Shell.InvalidRequest`.
+      operationId: controlSandboxShell
+      servers:
+        - url: https://{sandbox_key}.{domain}
+          description: Sandbox data-plane host
+          variables:
+            sandbox_key:
+              default: sandbox-key
+              description: Data-plane addressing key (`sandbox_key` from the control-plane response).
+            domain:
+              default: sandbox.example.com
+              description: Sandbox data-plane domain from the control-plane response.
+      security:
+        - sandboxAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/SandboxShellRequestIDParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SandboxShellControlRequest'
+            examples:
+              resize:
+                summary: Resize the terminal
+                value:
+                  action: resize
+                  cols: 120
+                  rows: 32
+              close:
+                summary: Close the shell permanently
+                value:
+                  action: close
+      responses:
+        '200':
+          description: |
+            Control applied. `status=attached` after a successful resize;
+            `status=closed` after a successful close.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellControlResponse'
+              examples:
+                resize:
+                  summary: Resize applied
+                  value:
+                    request_id: "req-7f3c"
+                    sandbox_key: "sandbox-key"
+                    status: attached
+                close:
+                  summary: Shell closed
+                  value:
+                    request_id: "req-7f3c"
+                    sandbox_key: "sandbox-key"
+                    status: closed
+        '400':
+          $ref: '#/components/responses/SandboxShellBadRequest'
+        '401':
+          $ref: '#/components/responses/SandboxShellUnauthorized'
+        '404':
+          $ref: '#/components/responses/SandboxShellNotFound'
+        '409':
+          description: |
+            State conflict, depending on the action:
+            - `Shell.NotAttached` (resize): no active WebSocket connection —
+              resize requires one.
+            - `Shell.Creating` (close): a launch is still in progress and cannot
+              be closed yet; retry shortly.
+            - `Shell.Closing` (resize or close): the shell is already being torn down.
+            - `Shell.RuntimeNotRunning`: the sandbox is not running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+              example:
+                code: Shell.NotAttached
+                message: "shell has no active connection"
+                request_id: "req-7f3c"
+        '502':
+          description: |
+            Backend call failed, depending on the action:
+            - `Shell.ResizeFailed` (resize): the new size could not be applied;
+              the shell and connection stay alive, retry is safe.
+            - `Shell.CloseFailed` (close): closing on the backend failed **but
+              the shell state is already deleted — the shell is still gone**.
+              Retrying cannot resurrect it; the next `POST /shell` starts a
+              brand-new session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+        '503':
+          description: |
+            Temporarily unavailable, one of `Shell.ProviderUnavailable` or
+            `Shell.StoreUnavailable`. For `close` the shell state is kept in the
+            closing state, so retrying the close is safe.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+        '500':
+          description: |
+            `Shell.InternalError`: unexpected server-side failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxShellErrorResponse'
+
   /sandboxes/{id}:
     get:
       tags:
       - Sandbox
       summary: Get sandbox details
       description: 'Returns sandbox details. Instances in the terminal failure state (`failed`) remain
-        readable, with the failure reason in `failure`; deleted or expired instances return 404.
+        readable, with the failure reason in `failure`. Instances being deleted or already deleted (`deleting`
+        / `deleted`) also remain readable, with the deleting party and reason in `deletion`, and the response
+        carries no `domain`. Expired instances that have not been reclaimed yet return 404.
 
         '
       operationId: getSandbox
@@ -403,15 +841,20 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
     patch:
       tags:
       - Sandbox
       summary: Update sandbox metadata
       description: 'Replaces the customer-defined metadata as a whole — no per-key merging; passing an
         empty object clears it. There are no mutable fields other than `metadata`. This operation does
-        not take the lifecycle lock, so it works in any visible state.
+        not take the lifecycle lock, so it works in any state except `deleting` and `deleted`, for which
+        it returns 404.
 
         '
       operationId: updateSandbox
@@ -438,29 +881,47 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
     delete:
       tags:
       - Sandbox
       summary: Delete (kill) a sandbox
-      description: 'Accepts the deletion. A 202 response means the deletion intent has been persisted
-        and the instance enters `deleting`; it only becomes `deleted` after the backing resources are
-        confirmed released. If the release fails, the instance stays in `deleting` and reconciliation
-        retries — **there is no force parameter**: skipping the release would leave orphaned billable
-        resources.
+      description: 'Deletes the sandbox. The control plane releases the backing resources synchronously within
+        this request: on success the response is **200** with `state` `deleted` (a soft delete; the record
+        stays readable). If the release fails or times out the response is **202** with `state` `deleting`:
+        the deletion intent is persisted and reconciliation retries until it converges — **there is no force
+        parameter**: skipping the release would leave orphaned billable resources. If the deletion intent
+        itself cannot be handed off for processing, the call fails with 500 `System.Internal` instead of 202.
 
 
         Once the deletion intent is persisted the call is safely replayable: repeating it against a sandbox
-        already being deleted returns 202 again, not 409.
+        that is being deleted returns 202 (`deleting`), and against an already deleted sandbox it returns
+        200 (`deleted`); it never returns 409. Calling it on a sandbox that failed to create (`failed`)
+        turns it into `deleted` and returns 200.
+
+
+        If the sandbox''s IDC is under maintenance the deletion is still accepted: the intent is
+        recorded and the sandbox stops being queryable, but the release itself runs once the IDC is
+        usable again.
 
         '
       operationId: deleteSandbox
       parameters:
       - $ref: '#/components/parameters/SandboxIdPathParam'
       responses:
+        '200':
+          description: The deletion completed within the request (`state` is `deleted`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxDeleteAcceptedResponse'
         '202':
-          description: Deletion accepted
+          description: Deletion accepted and being released asynchronously (`state` is `deleting`).
           content:
             application/json:
               schema:
@@ -471,8 +932,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
   /sandboxes/{id}/connect:
     post:
       tags:
@@ -480,7 +945,11 @@ paths:
       summary: Connect to a sandbox
       description: 'Connects to a running sandbox and returns its data-plane connection info (domain and
         access token). When `timeout` is provided and greater than 0, the call also extends the sandbox''s
-        lifetime (extend-only, never shortens). Returns 409 if the instance is not running.
+        lifetime (extend-only, never shortens). A paused instance returns 409: waking one up is an
+        explicit operation, so call `POST /sandboxes/{id}/resume` first and connect once the state has
+        become `running`. A `failed` or deleted instance returns 404 `Resource.NotFound`, and so does an instance that is still
+        `provisioning`. An instance in a transitional state (`checkpointing`, `updating`, `pausing`, `resuming`)
+        returns 409.
 
 
         The response always returns the authoritative expiry time `end_at` as settled by this call — if
@@ -519,15 +988,207 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
+  /sandboxes/{id}/pause:
+    post:
+      tags:
+      - Sandbox
+      summary: Pause a sandbox
+      description: 'Pauses a running sandbox, preserving its ID, disk, memory, and process state.
+        Resume continues the saved processes without re-running the template startup command.
+        Only a running instance can be paused; any other state returns 409.
+
+
+        Acceptance returns **202**. The `state` in the response is the state on the row at submission
+        time — always `pausing` for a pause — and is **not** the final outcome; poll `GET /sandboxes/{id}`
+        until it reports `paused`.
+
+
+        A pause does not consume runtime: `end_at` is frozen while paused (so it may already be in the
+        past) and is shifted forward by the paused duration on resume. A paused instance is instead bounded
+        by the retention window `paused_expire_at`, after which the instance and its disk are both reclaimed.
+
+        '
+      operationId: pauseSandbox
+      parameters:
+      - $ref: '#/components/parameters/SandboxIdPathParam'
+      responses:
+        '202':
+          description: Pause accepted; poll the detail endpoint for the settled state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxLifecycleAcceptedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 'State conflict (`Resource.StateConflict` or an operation-specific code), or the
+            selected IDC is under maintenance (`IDC.UnderMaintenance`): write operations are rejected
+            until the IDC is usable again. Read operations are unaffected.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
+  /sandboxes/{id}/resume:
+    post:
+      tags:
+      - Sandbox
+      summary: Resume a paused sandbox
+      description: 'Wakes a paused sandbox. This is the **only** way to wake one — `/connect` no longer
+        wakes an instance as a side effect. Only a `paused` instance can be resumed; any other state returns
+        409.
+
+
+        Acceptance returns **202**. The `state` in the response is the state on the row at submission time
+        (`resuming`, or `running` when the backing infrastructure settles within the request); poll `GET
+        /sandboxes/{id}` for the final outcome.
+
+
+        `timeout` (seconds) defaults to the runtime that was left at the moment of the pause (paused time
+        is not counted) when omitted or 0 or less; when provided, it replaces that value. Either way the
+        account''s maximum lifetime cap applies, and exceeding it returns 400. A resume re-signs the `sandbox_access_token`
+        (its validity is bound to `end_at`), so call `/connect` again for a fresh token once the state
+        is `running`.
+
+
+        If the resume fails the instance returns to `paused` with its files intact and can be retried.
+        The one exception is an instance the backing infrastructure reports as gone: the paused data is
+        lost with it, the instance moves to reclamation, and polling will show `deleting`.
+
+
+        Resume restores disk, memory, and process state. Existing processes continue without re-running
+        the template startup command. Reconnect network and shell connections after resume; instance
+        readiness and endpoint availability are checked separately.
+
+        '
+      operationId: resumeSandbox
+      parameters:
+      - $ref: '#/components/parameters/SandboxIdPathParam'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResumeSandboxControlRequest'
+      responses:
+        '202':
+          description: Resume accepted; poll the detail endpoint for the settled state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxLifecycleAcceptedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 'State conflict (`Resource.StateConflict` or an operation-specific code), or the
+            selected IDC is under maintenance (`IDC.UnderMaintenance`): write operations are rejected
+            until the IDC is usable again. Read operations are unaffected.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
+  /sandboxes/{id}/actions:
+    post:
+      tags:
+      - Sandbox
+      summary: Execute a sandbox runtime action
+      description: 'Single dispatch endpoint for runtime actions on a running sandbox. Currently
+        `update_egress_policy` is supported: it replaces the egress allowlist. Only a sandbox created with
+        `egress_control=true` can be updated; the allowlist is a full replacement, not a merge.
+
+
+        `applied=immediate` means the change is already in effect (existing connections are not promised
+        to drop); `applied=eventual` means the change is accepted and still propagating. A sandbox without
+        `egress_control` returns 400.
+
+
+        **Only a `running` sandbox accepts this call.** `paused` and other transitional states return
+        409: a paused sandbox has no writable live network, and a resume does not replay a change submitted
+        while paused — accepting the call would silently do nothing. Resume the sandbox first with `POST
+        /sandboxes/{id}/resume`.
+
+        '
+      operationId: executeSandboxAction
+      parameters:
+      - $ref: '#/components/parameters/SandboxIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteSandboxNetworkActionRequest'
+      responses:
+        '200':
+          description: Action executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateSandboxEgressPolicyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/SandboxMutationFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/SandboxMutationFailed'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
   /sandboxes/{id}/timeout:
     post:
       tags:
       - Sandbox
       summary: Set sandbox timeout
       description: 'Resets the time-to-live relative to the current time. When `timeout` is omitted or
-        is 0 or less, 300 seconds is used. Only allowed while `running`; any other state returns 409.
+        is 0 or less, 300 seconds is used. Only allowed while `running` or `paused`; any other state returns
+        409.
+
+
+        For a `paused` instance, `timeout` means "how long it may run once awake": paused time is not
+        counted, so the new `end_at` is measured from the moment of the pause (`paused_at + timeout`),
+        not from the current time. This call does not change `paused_expire_at` — how long an instance
+        may stay paused and how long it may run are two separate budgets.
 
 
         The response returns the expiry time before and after this change: since a `timeout` of 0 or less
@@ -564,9 +1225,21 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/SandboxMutationFailed'
+          description: 'The runtime rejected the mutation (see `details.last_mutation`), or the selected IDC
+            is under maintenance (`IDC.UnderMaintenance`): write operations are rejected until the IDC is
+            usable again.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxMutationErrorResponse'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/SandboxMutationFailed'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
   /files:
     servers:
     - url: https://{sandbox_key}.{domain}
@@ -601,7 +1274,7 @@ paths:
         Bearer`. Control-plane tokens are invalid here, and vice versa.
 
         3. **Successful responses are not wrapped in the `{request_id, data}` envelope** (the body is
-        a byte stream), and neither are errors — see the error notes below.
+        a byte stream); errors use the `{code, message, request_id}` error body — see the error notes below.
 
 
         ## Optional capabilities: `Content-Length` and resumable downloads
@@ -662,7 +1335,9 @@ paths:
             '
           headers:
             Content-Disposition:
-              description: '`attachment; filename="<basename>"`'
+              description: '`inline` or `attachment` (depends on the data center), followed by `filename=<basename>`.
+                The filename is quoted when it contains special characters and is sent as `filename*=UTF-8''''...`
+                when it is not ASCII.'
               schema:
                 type: string
             Accept-Ranges:
@@ -714,8 +1389,18 @@ paths:
           $ref: '#/components/responses/SandboxFileForbidden'
         '404':
           $ref: '#/components/responses/SandboxFileNotFound'
+        '406':
+          description: '`Parameter.Invalid`: the data center cannot serve the file in the requested `Accept-Encoding`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxFileError'
+        '409':
+          $ref: '#/components/responses/SandboxFileConflict'
+        '412':
+          $ref: '#/components/responses/SandboxFilePreconditionFailed'
         '416':
-          description: '**Optional capability**, returned only by data centers that support resuming:
+          description: '`Parameter.Invalid`. **Optional capability**, returned only by data centers that support resuming:
             the `Range` start is beyond the file length.
 
             '
@@ -744,11 +1429,11 @@ paths:
         ## Request constraints
 
 
-        - **The target path is given only in the `path` query parameter.** Including an additional `path`
-        form field in the body is rejected (`400`): when the two sources disagree there is no way to know
-        which to trust, and failing is better than guessing.
+        - **The target path is given only in the `path` query parameter; send it exactly once.** A `path`
+        form field in the body is ignored or rejected with `400`, depending on the data center. Repeating
+        `path` in the query returns `400` in some data centers and uses the first value in others.
 
-        - The request body must be `multipart/form-data`; any other `Content-Type` returns `415`.
+        - The request body must be `multipart/form-data`. Some IDCs also accept `multipart/mixed`. In either type the file part must carry `name="file"` in `Content-Disposition`; a part with any other name is ignored and the call still returns `200` with an empty array, so check that the array is not empty. Any other `Content-Type` returns `415`.
 
         - One file per request.
 
@@ -803,14 +1488,18 @@ paths:
           $ref: '#/components/responses/SandboxFileForbidden'
         '404':
           $ref: '#/components/responses/SandboxFileNotFound'
+        '409':
+          $ref: '#/components/responses/SandboxFileConflict'
+        '412':
+          $ref: '#/components/responses/SandboxFilePreconditionFailed'
         '413':
-          description: The file exceeds the data center's per-file size limit.
+          description: '`Parameter.Invalid`: the file exceeds the data center''s per-file size limit.'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SandboxFileError'
         '415':
-          description: The request body is not `multipart/form-data`.
+          description: '`Parameter.Invalid`: the request body is neither `multipart/form-data` nor a `multipart/mixed` the IDC accepts.'
           content:
             application/json:
               schema:
@@ -822,7 +1511,7 @@ paths:
         '502':
           $ref: '#/components/responses/SandboxFileUpstreamError'
         '507':
-          description: The sandbox is out of disk space.
+          description: '`System.Internal`: the sandbox is out of disk space.'
           content:
             application/json:
               schema:
@@ -882,29 +1571,308 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
+  /snapshots:
+    post:
+      tags:
+        - SandboxSnapshot
+      summary: Create a durable snapshot
+      description: |
+        Creates a durable snapshot from a running sandbox in the current tenant.
+        The snapshot can be queried immediately, while creation completes asynchronously.
+        Poll GET /snapshots/{snapshot_id} until `status` becomes `ready` or `error`.
+        A ready snapshot can be supplied as `snapshot_id` to POST /sandboxes.
+        A snapshot captures the sandbox filesystem only: running processes and
+        in-memory state are not preserved, and a sandbox created from it boots fresh
+        from the saved disk. The source sandbox keeps running.
+        If snapshot creation is unsupported for the source sandbox, the request
+        returns 422 `Snapshot.UnsupportedOnProvider`.
+
+        `Idempotency-Key` is optional. Within the 24-hour deduplication window,
+        repeating a key with identical parameters returns the same snapshot with its
+        current status and `Idempotency-Replayed: true`, including while `creating`
+        and after it becomes `ready`. Different parameters return 400
+        `Sandbox.IdempotentParameterMismatch`. Without the header, no deduplication
+        is performed.
+
+        The source sandbox must be `running`, otherwise 409 `Snapshot.SourceNotRunning`.
+        While another snapshot of the same sandbox is being created, a new request
+        may return 409 `Snapshot.CreateInProgress`, including temporarily after a
+        previous snapshot was cancelled with DELETE. Wait before retrying and ensure
+        the source sandbox is `running`.
+
+        A definitive snapshot creation failure returns 201 with a queryable snapshot in
+        `error` and `failure_code: Snapshot.ProviderCreateFailed`. Replaying that
+        key returns the same error snapshot without creating another.
+
+        Some failed creation attempts consume the idempotency key; replay returns
+        409 `Sandbox.IdempotentKeyConsumed`. Error details include `failure_code`
+        and `snapshot_id`; the failed snapshot remains readable through GET.
+        Retry with a new `Idempotency-Key`. A deleted snapshot also consumes its
+        original key.
+
+        Non-empty names are case-sensitive and unique within the organization across
+        all IDCs. A name held by another snapshot returns 409 `Resource.AlreadyExists`.
+        Empty names may be shared. Creation failure clears the name atomically;
+        the failed record remains readable by snapshot_id. Use a new Idempotency-Key
+        to retry with the same name once the source sandbox is running again.
+        Name release does not change whether a key can be replayed. A definitive
+        Snapshot.ProviderCreateFailed result remains replayable and returns the
+        current record, whose name is cleared on failure. Failures detected while
+        the create request is being handled, such as a source lease or workflow
+        handoff failure, consume the key; replay returns 409
+        Sandbox.IdempotentKeyConsumed without a snapshot record. Failures settled
+        later in the background, such as a failed creation workflow or an expired
+        creation deadline, leave the key replayable; replay returns the current
+        error record with its cleared name.
+        Use snapshot_id to query a failed attempt; use a new key to create another.
+      operationId: createSandboxSnapshot
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptionalParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSandboxSnapshotRequest'
+      responses:
+        '201':
+          description: Snapshot record is addressable; status may be creating, ready, or error.
+          headers:
+            Idempotency-Replayed:
+              description: Present and true when the original request was replayed.
+              schema:
+                type: boolean
+            Idempotency-Key:
+              description: The accepted idempotency key, when supplied.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxSnapshotResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Name conflict (Resource.AlreadyExists), source not running (Snapshot.SourceNotRunning), capture in progress (Snapshot.CreateInProgress), consumed key (Sandbox.IdempotentKeyConsumed), or IDC maintenance (IDC.UnderMaintenance).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      tags:
+        - SandboxSnapshot
+      summary: List durable snapshots
+      description: |
+        Lists snapshots in the current tenant, including `deleting` and `delete_failed`.
+        Deleted snapshots are excluded. Filtering by `status=deleted` returns 400.
+      operationId: listSandboxSnapshots
+      parameters:
+        - $ref: '#/components/parameters/IdcNameQueryParam'
+        - name: source_sandbox_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: name
+          in: query
+          schema:
+            type: string
+            maxLength: 255
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [creating, ready, error, deleting, delete_failed]
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: Durable snapshots were returned successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSandboxSnapshotsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /snapshots/{snapshot_id}:
+    parameters:
+      - name: snapshot_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags:
+        - SandboxSnapshot
+      summary: Get a durable snapshot
+      description: |
+        Returns a snapshot in the current tenant. Missing, deleted, or other-tenant
+        snapshots return 404. Malformed snapshot identifiers return 400.
+      operationId: getSandboxSnapshot
+      responses:
+        '200':
+          description: Durable snapshot details were returned successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxSnapshotResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      tags:
+        - SandboxSnapshot
+      summary: Update a durable snapshot
+      description: |
+        Updates the customer-defined name and/or metadata. Omitted fields remain unchanged.
+        Use an empty string to clear the name or an empty object to clear metadata;
+        metadata replaces the entire existing map.
+
+        Only snapshots in `ready` or `error` can be edited. Other addressable states
+        return 409 `Resource.StateConflict`, with the current status at the time
+        the update was refused.
+
+        Non-empty names are case-sensitive and unique within the organization across
+        all IDCs. A name held by another snapshot returns 409 `Resource.AlreadyExists`.
+        Explicitly naming an error snapshot again reserves that name.
+      operationId: updateSandboxSnapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSandboxSnapshotRequest'
+      responses:
+        '200':
+          description: Durable snapshot metadata was updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxSnapshotResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Name conflict (Resource.AlreadyExists) or snapshot state does not allow editing (Resource.StateConflict).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags:
+        - SandboxSnapshot
+      summary: Delete a durable snapshot
+      description: |
+        Accepts asynchronous deletion and returns 202 with `status: deleting`.
+        The snapshot remains readable through GET and LIST while deletion completes;
+        new sandbox launches from it are rejected. Repeating DELETE while `deleting`
+        returns the same accepted response. Once deletion completes, GET returns 404.
+
+        If deletion fails, the snapshot remains queryable in `delete_failed`
+        with `failure_code` and `status_reason`. Resolve dependencies and
+        repeat DELETE to retry. The snapshot remains unavailable for new launches.
+        Existing dependencies that prevent deletion return 409.
+
+        Creating snapshots may be cancelled with DELETE. A new snapshot request
+        from the same source may still return 409 `Snapshot.CreateInProgress`
+        temporarily after cancellation. Poll GET until 404 or `delete_failed`.
+
+        Deleting and delete_failed records retain their names until deletion completes.
+        A 202 response accepts deletion; it does not confirm that the snapshot is deleted.
+        A creating snapshot cancelled with DELETE keeps its name until its creation
+        deadline passes and deletion completes. A delete_failed snapshot cannot be
+        renamed; retry DELETE to release its name.
+      operationId: deleteSandboxSnapshot
+      responses:
+        '202':
+          description: Deletion accepted; poll GET until 404 or status=delete_failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request_id, data]
+                properties:
+                  request_id: {type: string}
+                  data:
+                    type: object
+                    required: [snapshot_id, status]
+                    properties:
+                      snapshot_id: {type: string, format: uuid}
+                      status: {type: string, enum: [deleting]}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            State conflict. `Snapshot.HasDependencies`: the snapshot is still referenced by an active resource (for example a sandbox launched from it); remove the dependents and retry. Other state conflicts use `Resource.StateConflict`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /templates:
     post:
       tags:
       - SandboxTemplate
       summary: Create a Template and start its initial Build
       description: "Creates a logical Template together with its initial Build. The initial\nBuild is created\
-        \ and started from the required `build` definition in the\nsame request.\n\n`Idempotency-Key`\
+        \ and started from the required `build` definition in the\nsame request. A dockerfile that references\
+        \ an uploaded file\n(`{{file:...}}`) cannot be used here (400): create the Template without\n`build`,\
+        \ upload the file, then start the waiting Build.\n\n`Idempotency-Key`\
         \ is required and acts as the idempotency key because Template\ncreation can complete after an\
         \ upstream timeout; a keyless retry would build a\nsecond Template. Repeating the request with\
         \ identical parameters replays the\nsame Template/Build (with `Idempotency-Replayed: true`); a\
         \ different body under\nthe same key returns 400 `Sandbox.IdempotentParameterMismatch`; after\
         \ the\nTemplate is deleted the key answers 409 `Sandbox.IdempotentKeyConsumed`. Keys\nare remembered\
-        \ for 24 hours. (`X-Request-ID` is trace-only and server-generated.)\n\n`resources` supports two\
-        \ mutually exclusive forms:\n\n- Preset: `{\"type\":\"preset\",\"product\":\"gmi.sandbox.x-large\"\
-        }`. The\n  `product` value is the catalog SKU (see `GET /api/v2/products`); the\n  service resolves\
-        \ the active entry from the product catalog. Preset values are\
-        \ used as configured and\n  are not constrained by custom resource limits.\n- Custom: `{\"type\"\
-        :\"custom\",\"cpu_count\":4,\"memory_mb\":8192,\n  \"disk_size_mb\":32768,\"architecture\":\"\
-        x86_64\"}`. All three numeric\n  fields are required. Custom resources are limited to 16 vCPU,\n\
-        \  65536 MiB memory, and 65536 MiB boot disk, and must also be\n  representable by the selected\
-        \ IDC.\n"
+        \ for 24 hours. (`X-Request-ID` is trace-only and server-generated.)\n\n`resources` selects a catalog\
+        \ preset, e.g.\n`{\"type\":\"preset\",\"product\":\"gmi.sandbox.x-large\"}`. The `product`\nvalue\
+        \ is the catalog SKU (see `GET /api/v2/products`); the service\nresolves the active entry from the\
+        \ product catalog.\n"
       operationId: createTemplate
       parameters:
       - $ref: '#/components/parameters/IdempotencyKeyRequiredParam'
@@ -918,9 +1886,11 @@ paths:
         '201':
           description: 'The Template record is created and immediately addressable: `GET
 
-            /templates/{id}` works right away. Build readiness is reported by
+            /templates/{id}` works right away, and a failed initial Build
 
-            `status`, not by the status code.
+            leaves a rebuildable Template rather than erasing it. Build
+
+            readiness is reported by `status`, not by the status code.
 
             '
           content:
@@ -934,13 +1904,26 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          $ref: '#/components/responses/Conflict'
+          description: 'State conflict (`Resource.StateConflict` or an operation-specific code), or the
+            selected IDC is under maintenance (`IDC.UnderMaintenance`): write operations are rejected
+            until the IDC is usable again. Read operations are unaffected. A Template with the same name
+            already exists: `Resource.AlreadyExists`.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '422':
           $ref: '#/components/responses/Unsupported'
         '429':
           $ref: '#/components/responses/QuotaExceeded'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
         '502':
           $ref: '#/components/responses/UpstreamError'
     get:
@@ -951,12 +1934,28 @@ paths:
 
         sorted by creation time in descending order. Internal artifact IDs are
 
-        never returned.
+        never returned. `name` is an exact match on the Template display name;
+
+        omit it to list every visible Template.
 
         '
       operationId: listTemplates
       parameters:
       - $ref: '#/components/parameters/IdcNameQueryParam'
+      - name: name
+        in: query
+        description: 'Exact Template display name. Same charset and length as create/PATCH
+
+          (`^[A-Za-z0-9_-]+$`, max 64). Names are unique per organization and data center,
+
+          so omitting `idc_name` may return the same name from more than one data center.
+
+          '
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: ^[A-Za-z0-9_-]+$
       - $ref: '#/components/parameters/PageParam'
       - $ref: '#/components/parameters/PageSizeParam'
       responses:
@@ -972,8 +1971,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
   /templates/{id}:
     parameters:
     - $ref: '#/components/parameters/TemplateIdPathParam'
@@ -999,8 +2002,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
     patch:
       tags:
       - SandboxTemplate
@@ -1041,47 +2048,37 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
     delete:
       tags:
       - SandboxTemplate
       summary: Delete a Template
-      description: 'Soft-deletes the Template so it disappears from tenant-visible lists.
-
-        Existing Sandboxes are not affected because their effective Template
-
-        configuration is copied at creation time.
-
-
-        Build artifact reclaim is attempted before completing the
-
-        logical delete. When the selected IDC cannot reclaim an artifact, the
-
-        Build remains with `artifact_state=retained` after soft-delete. When
-
-        reclaim is blocked by a dependent resource, the request fails with
-
-        `Template.HasDependents` (409) and nothing is soft-deleted.
-
-
-        Deletion is also rejected while a Build is in progress, and when
-
-        dependent resources still reference the Template''s Builds (for
-
-        example child Templates, Snapshots, or live Sandboxes).
-
-        '
+      description: |
+        Accepts deletion and returns 202 with status=deleting. GET and LIST keep
+        the Template visible until deletion completes. New sandboxes, derived
+        builds, rebuilds and metadata updates are rejected while deleting or delete_failed.
+        Once deletion completes, the Template disappears from tenant-visible lists
+        and subsequent GET returns 404.
+        A dependency conflict during deletion or exhausted retries
+        leaves status=delete_failed, failure_code and status_reason. Clear
+        dependencies and repeat DELETE to retry. Repeating DELETE during deleting
+        returns the same accepted response.
+        Tracked dependents (such as child Templates, Snapshots or live Sandboxes)
+        and in-progress Builds return 409 before acceptance.
+        Child Templates still deleting or delete_failed continue to block deletion.
+        Delete dependent resources and wait for their deletion to complete before
+        retrying deletion of the parent Template.
+        Attempts still unfinished after 24 hours are marked delete_failed.
+        Partially deleted Templates remain fenced against new references and updates.
       operationId: deleteTemplate
       responses:
-        '200':
-          description: 'Deletion completed synchronously: the Template is soft-deleted and
-
-            the Build artifact reclaim attempt has already settled. There is
-
-            nothing left to poll.
-
-            '
+        '202':
+          description: Deletion accepted; poll GET until 404 or status=delete_failed.
           content:
             application/json:
               schema:
@@ -1095,12 +2092,256 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          description: >-
+            State conflict. `Template.HasDependents`: the template is still referenced by an active resource (for example a sandbox created from it, or a derived build); remove the dependents and retry. Other state conflicts use `Resource.StateConflict`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
+  /templates/{template_id}/files:
+    parameters:
+    - $ref: '#/components/parameters/TemplateBuildTemplateIdPathParam'
+    - $ref: '#/components/parameters/IdcNameQueryParam'
+    post:
+      tags:
+      - SandboxTemplate
+      summary: Initialize a Template build-context upload
+      description: 'Creates an immutable tar/tgz build context and returns a staging upload
+
+        session. Upload the archive directly with a single HTTP PUT to the
+
+        returned URL and poll the returned status URL; there is no
+
+        client-visible complete operation. The platform verifies the uploaded
+
+        object and imports it into the selected IDC. Backend identity and
+
+        storage object identifiers are never exposed. Maximum declared size is
+
+        1 GiB. `Idempotency-Key` is required. A replay returns the same file
+
+        ID. While the file is still awaiting upload and the archive has not
+
+        been received yet, the replay issues a fresh upload session for the
+
+        same staging object; if the archive has already been received, or the
+
+        file has advanced past `awaiting_upload`, `upload` is omitted and
+
+        callers should poll `status_url`. Once the file is `failed` or
+
+        `expired`, or its upload deadline has passed, the key is consumed and
+
+        the replay returns 409 `Sandbox.IdempotentKeyConsumed` — create a new
+
+        file with a new key.
+
+        '
+      operationId: createTemplateFile
+      parameters:
+      - $ref: '#/components/parameters/TemplateFileIdempotencyKeyRequiredParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTemplateFileRequest'
+      responses:
+        '201':
+          description: 'Staging upload session initialized, or the original result replayed.
+
+            Replays include `Idempotency-Replayed: true`.
+
+            '
+          headers:
+            Idempotency-Replayed:
+              schema:
+                type: string
+                enum:
+                - 'true'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateFileUploadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 'The file created under this Idempotency-Key is `failed` or `expired`,
+
+            or its upload deadline has passed; the key is consumed. Retry with a
+
+            new Idempotency-Key to create a new file.
+
+
+            Also returned as `IDC.UnderMaintenance` when the selected IDC is under maintenance;
+            write operations are rejected until the IDC is usable again.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
+  /templates/{template_id}/files/{file_id}:
+    parameters:
+    - $ref: '#/components/parameters/TemplateBuildTemplateIdPathParam'
+    - name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    - $ref: '#/components/parameters/IdcNameQueryParam'
+    get:
+      tags:
+      - SandboxTemplate
+      summary: Get Template build-context status
+      description: 'Returns the platform-owned lifecycle state of the uploaded build
+
+        context. Backend references and storage object names are never
+
+        returned. Only a ready, unexpired file with sufficient remaining
+
+        validity in the selected IDC may be referenced by a new Build.
+
+        '
+      operationId: getTemplateFile
+      responses:
+        '200':
+          description: Current file context state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateFileResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
   /templates/{template_id}/builds:
     parameters:
     - $ref: '#/components/parameters/TemplateBuildTemplateIdPathParam'
+    post:
+      tags:
+      - SandboxTemplate
+      summary: Create and start a rebuild
+      description: 'Creates a new Build from the given definition and starts it immediately.
+
+        A rebuild inherits the most recent Build''s IDC placement and resources, so a
+
+        Template with no Build records left has nothing to inherit and returns
+
+        409. Not supported in every IDC; IDCs without rebuild support reject it with 422.
+
+
+        A rebuild supersedes the Template''s still-running Builds: each one is
+
+        finalized as `error` with failure code `TemplateBuild.Superseded`, its
+
+        backing build in the selected IDC is cancelled, and its partial
+
+        artifacts are reclaimed, best-effort. When the new Build turns `ready`
+
+        it becomes the Template''s default Build; the previously bound Build''s
+
+        artifact is then reclaimed where the selected IDC permits it (an
+
+        artifact still referenced by dependent resources is retained and
+
+        reclaimed on Template deletion instead). If the new Build fails, the
+
+        previous binding is unchanged.
+
+
+        This operation is not idempotent and does not accept an `Idempotency-Key`
+
+        header. Every call creates a new Build and supersedes the running ones, so
+
+        before retrying a request whose outcome is unknown, check
+
+        `GET /templates/{template_id}/builds` for the Build it may already have created.
+
+        '
+      operationId: createTemplateBuild
+      parameters:
+      - $ref: '#/components/parameters/IdcNameQueryParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuildDefinition'
+      responses:
+        '201':
+          description: 'The Build record is created and immediately addressable via
+
+            `GET /templates/{template_id}/builds/{id}`; build progress is
+
+            reported by `status`, not by the status code.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateBuildMutation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 'State conflict (`Resource.StateConflict` or an operation-specific code), or the
+            selected IDC is under maintenance (`IDC.UnderMaintenance`): write operations are rejected
+            until the IDC is usable again. Read operations are unaffected.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/Unsupported'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
     get:
       tags:
       - SandboxTemplate
@@ -1125,12 +2366,73 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
   /templates/{template_id}/builds/{id}:
     parameters:
     - $ref: '#/components/parameters/TemplateBuildTemplateIdPathParam'
     - $ref: '#/components/parameters/BuildIdPathParam'
+    post:
+      tags:
+      - SandboxTemplate
+      summary: Start an existing Build
+      description: 'Starts a Build created by the split create flow (a `waiting` initial
+
+        Build). This is an action on an existing record — nothing new is
+
+        created — so success is a 202 acceptance; poll the Build for the
+
+        outcome. Starting a Build that is not in `waiting` state returns 400 `Parameter.Invalid`. Not
+
+        supported in every IDC; unsupported IDCs reject it with 422.
+
+        '
+      operationId: startTemplateBuild
+      parameters:
+      - $ref: '#/components/parameters/IdcNameQueryParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuildDefinition'
+      responses:
+        '202':
+          description: The start instruction was accepted; the Build is now building.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateBuildMutation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 'State conflict (`Resource.StateConflict` or an operation-specific code), or the
+            selected IDC is under maintenance (`IDC.UnderMaintenance`): write operations are rejected
+            until the IDC is usable again. Read operations are unaffected.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/Unsupported'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
     get:
       tags:
       - SandboxTemplate
@@ -1152,8 +2454,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
         '502':
           $ref: '#/components/responses/UpstreamError'
   /templates/{template_id}/builds/{id}/logs:
@@ -1164,17 +2470,19 @@ paths:
       tags:
       - SandboxTemplate
       summary: Get live Template Build logs
-      description: "Returns live logs for a Template Build. Results are filtered and paged\
-        \ server-side.\n"
+      description: "Returns live logs for a Template Build; the platform does not persist them.\
+        \ \nLogs are filtered and paged server-side across upstream pages, preserving raw log\
+        \ offsets.\n"
       operationId: getTemplateBuildLogs
       parameters:
       - name: offset
         in: query
-        description: Zero-based normalized log entry offset.
+        description: Zero-based raw log entry offset before level filtering. At most 2147483647.
         schema:
           type: integer
-          format: int64
+          format: int32
           minimum: 0
+          maximum: 2147483647
           default: 0
       - name: limit
         in: query
@@ -1209,19 +2517,19 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-        '410':
-          $ref: '#/components/responses/ArtifactReclaimed'
+        '499':
+          $ref: '#/components/responses/RequestCanceled'
         '500':
           $ref: '#/components/responses/InternalError'
-        '502':
-          $ref: '#/components/responses/UpstreamError'
+        '504':
+          $ref: '#/components/responses/RequestTimeout'
 components:
   parameters:
     BuildIdPathParam:
       name: id
       in: path
       required: true
-      description: Template Build identifier.
+      description: GMI Template Build identifier.
       schema:
         type: string
         format: uuid
@@ -1299,7 +2607,7 @@ components:
       name: execution_id
       in: path
       required: true
-      description: Public execution identifier returned by the create operation.
+      description: Public execution identifier returned by the create operation. A value that is not a valid UUID is treated as an unknown execution and returns 404 `Execution.NotFound`.
       schema:
         type: string
         format: uuid
@@ -1307,7 +2615,9 @@ components:
       name: X-Request-ID
       in: header
       required: false
-      description: Optional request correlation identifier echoed in the response.
+      description: |
+        Ignored. The server generates its own request ID (`req-<uuid>`) for every request and
+        returns it in the `X-Request-ID` response header and the body's `request_id`.
       schema:
         type: string
         minLength: 1
@@ -1316,7 +2626,9 @@ components:
       name: wait
       in: query
       required: false
-      description: Wait for a terminal result before responding. Defaults to false.
+      description: >-
+        Wait for a terminal result before responding. Defaults to false. Must be `true` or `false`; any
+        other value returns 400 `Execution.InvalidRequest`.
       schema:
         type: boolean
         default: false
@@ -1328,18 +2640,49 @@ components:
 
         are accepted. A wait timeout never cancels the execution.
 
+        Only valid together with `wait=true` (otherwise 400 `Execution.InvalidRequest`); a value outside 1..25 or not an integer returns 400 `Execution.InvalidWaitTimeout`.
+
         '
       schema:
         type: integer
         minimum: 1
         maximum: 25
         default: 25
+    SandboxExecIdempotencyKeyParam:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Optional key that makes `POST /executions` safe to retry: 1 to 64 printable ASCII characters
+        without whitespace. Resubmitting the same key with
+        identical parameters returns the same execution in its current state instead of starting a new
+        one; the same key with different parameters returns 400 `Execution.IdempotentParameterMismatch`.
+        A key that is empty or not 1 to 64 printable ASCII characters returns 400 `Execution.InvalidRequest`.
+        The key is remembered for a limited time after the execution reaches a terminal state; after that,
+        the same key starts a new execution.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    SandboxShellRequestIDParam:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: |
+        Ignored. The server generates its own request ID (`req-<uuid>`) for every request and
+        returns it in the `X-Request-ID` response header and the body's `request_id`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+
     SandboxFilePathQueryParam:
       name: path
       in: query
       required: true
-      description: '**Absolute path** inside the sandbox. Must start with `/`; relative segments such
-        as `.` / `..` are rejected. No semantic interpretation is applied beyond existence checks; for
+      description: '**Absolute path** inside the sandbox. Must start with `/` and be normalized: relative
+        segments such as `.` / `..` and `//` are rejected, and a path that points to a directory (for example
+        one ending in `/`) returns `400`. No semantic interpretation is applied beyond existence checks; for
         writes, the parent directory must already exist.
 
         '
@@ -1373,27 +2716,49 @@ components:
       name: template_id
       in: path
       required: true
-      description: Owning Template identifier.
+      description: Owning GMI Template identifier.
       schema:
         type: string
         format: uuid
+    TemplateFileIdempotencyKeyRequiredParam:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 'Caller-generated key that makes Template file initialization safe to
+
+        retry. Matched byte-for-byte: 1-64 printable ASCII characters with no
+
+        whitespace. The key is scoped to the organization and Template and is
+
+        retained with the Template file lifecycle. A different request body
+
+        under the same key returns 400 Sandbox.IdempotentParameterMismatch.
+
+        '
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
     TemplateIdPathParam:
       name: id
       in: path
       required: true
-      description: Template identifier.
+      description: GMI Template identifier.
       schema:
         type: string
         format: uuid
   responses:
-    ArtifactReclaimed:
-      description: The Build artifact and its live logs are no longer available.
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
     BadRequest:
-      description: Invalid request parameters
+      description: >-
+        Invalid request parameters. Two code families are used: `Request.InvalidParameter` for
+        request parsing and format validation (unknown or malformed body fields, malformed IDs,
+        invalid enum values, out-of-range paging) and `Parameter.Invalid` for business validation
+        (for example a template or IDC that cannot be found, or a `timeout` over the limit). Unknown or
+        invalid fields inside the `params` of `POST /sandboxes/{id}/actions` are reported as
+        `Parameter.Invalid`. Other 400 codes are specific to an operation, for example
+        `Sandbox.SourceConflict` (both or neither of `template_id` and `snapshot_id`) and
+        `Sandbox.IdempotentParameterMismatch` (an `Idempotency-Key` reused with different parameters).
+        Both code families share the same HTTP status, so decide by the `code` value, not the status alone.
       content:
         application/json:
           schema:
@@ -1418,6 +2783,20 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    IdcUnderMaintenance:
+      description: 'The selected IDC is under maintenance. Write operations are rejected until it is
+
+        usable again; read operations are unaffected.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: IDC.UnderMaintenance
+            message: IDC us-denver-1 is under maintenance
+            request_id: req-xxxx
     InternalError:
       description: Internal server error
       content:
@@ -1425,8 +2804,28 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
-            code: Internal.ServerError
+            code: System.Internal
             message: An internal server error occurred
+            request_id: req-xxxx
+    RequestCanceled:
+      description: The caller canceled the current HTTP request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: Request.Canceled
+            message: Request canceled
+            request_id: req-xxxx
+    RequestTimeout:
+      description: The current HTTP request exceeded the control-plane processing deadline.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: Request.Timeout
+            message: Request timed out
             request_id: req-xxxx
     NotFound:
       description: Resource not found
@@ -1451,64 +2850,146 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     SandboxExecBadRequest:
-      description: Invalid execution request or query parameter.
+      description: >-
+        Invalid execution request or query parameter. The error code is `Execution.InvalidRequest`
+        (invalid body, parameter or header, an unknown query parameter, or a request body over 1 MiB),
+        `Execution.InvalidWaitTimeout` (`wait_timeout_seconds` outside 1..25) or
+        `Execution.IdempotentParameterMismatch` (the `Idempotency-Key` was already used with different
+        parameters).
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxExecErrorResponse'
     SandboxExecConflict:
-      description: The execution is already terminal and cannot be canceled.
+      description: The execution cannot be cancelled in its current state (`Execution.AlreadyCancelled`, `Execution.CancelInProgress` or `Execution.AlreadyCompleted`), or the sandbox is not running (`Execution.RuntimeNotRunning`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SandboxExecErrorResponse'
+    SandboxExecRuntimeNotRunning:
+      description: >-
+        The sandbox is not running, so no command can be executed. The error code is
+        `Execution.RuntimeNotRunning`. Start or resume the sandbox and retry.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SandboxExecErrorResponse'
+    SandboxExecUnavailable:
+      description: >-
+        A dependency of the execution service is temporarily unavailable; the request can be retried.
+        The error code is `Execution.ProviderUnavailable` (the sandbox backend could not be reached) or
+        `Execution.StoreUnavailable` (the execution record could not be read or written).
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxExecErrorResponse'
     SandboxExecInternalError:
-      description: The execution service failed to complete the request.
+      description: >-
+        The execution service failed to complete the request. The error code identifies the failing step,
+        for example `Execution.ResultFailed` when reading an execution's result fails.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxExecErrorResponse'
     SandboxExecNotFound:
-      description: Execution does not exist or is not owned by this sandbox.
+      description: Execution does not exist, is not owned by this sandbox, or the identifier is not a valid UUID.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxExecErrorResponse'
     SandboxExecRateLimited:
-      description: The request was rate-limited.
+      description: >-
+        The request was rate-limited. For `POST /executions` the code is
+        `Execution.ConcurrencyLimitExceeded`: a sandbox allows at most 10 non-terminal executions at the
+        same time; retry after one completes.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxExecErrorResponse'
     SandboxExecUnauthorized:
-      description: Missing or invalid X-Access-Token.
+      description: |
+        Missing or invalid X-Access-Token. The body is always
+        `{"code":"Auth.Unauthorized","message":"unauthorized","request_id":"..."}`; missing, malformed,
+        expired, and wrong-sandbox tokens are indistinguishable.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxExecErrorResponse'
+          example:
+            code: Auth.Unauthorized
+            message: unauthorized
+            request_id: req-3f2b6c1e-8a0d-4f6b-9c3e-2d7a1b5e9f40
+    SandboxShellBadRequest:
+      description: |
+        Invalid request (`Shell.InvalidRequest`): the body contains unknown or
+        extra fields, an unknown `action`, or out-of-bounds values
+        (e.g. `cols`/`rows` outside 1..1000).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SandboxShellErrorResponse'
+          example:
+            code: Shell.InvalidRequest
+            message: "request body contains unknown field"
+            request_id: "req-7f3c"
+
+    SandboxShellUnauthorized:
+      description: |
+        Missing or invalid `X-Access-Token`, as on the other data-plane endpoints. The body is always
+        `{"code":"Auth.Unauthorized","message":"unauthorized","request_id":"..."}`; missing, malformed,
+        expired, and wrong-sandbox tokens are indistinguishable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SandboxShellErrorResponse'
+          example:
+            code: Auth.Unauthorized
+            message: unauthorized
+            request_id: req-3f2b6c1e-8a0d-4f6b-9c3e-2d7a1b5e9f40
+
+    SandboxShellNotFound:
+      description: |
+        No shell session exists (`Shell.NotFound`): none has been launched yet —
+        call `POST /shell` first — or the shell has already been closed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SandboxShellErrorResponse'
+          example:
+            code: Shell.NotFound
+            message: "no shell session for this sandbox"
+            request_id: "req-7f3c"
+
     SandboxFileBadRequest:
-      description: 'Invalid request: `path` is missing, is not an absolute path, or the upload body carries
-        a duplicate `path` field.
+      description: '`Parameter.Invalid`: invalid request — `path` is missing or (in some data centers) repeated in the query or sent as a body form field, is not an absolute path,
+        is not normalized (contains `.`, `..` or `//`), points to a directory, `username` names a user that does not exist, or the upload is malformed.
 
         '
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxFileError'
+    SandboxFileConflict:
+      description: '`Resource.StateConflict`: the sandbox is changing state (for example, resuming), or the
+        request conflicts with a concurrent operation on the same file. Retry later.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SandboxFileError'
     SandboxFileForbidden:
-      description: The token is valid, but file permissions inside the sandbox do not allow the operation.
+      description: '`Auth.Forbidden`: the token is valid, but file permissions inside the sandbox do not allow the operation.'
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxFileError'
     SandboxFileInternalError:
-      description: Data-plane internal error.
+      description: '`System.Internal`: data-plane internal error.'
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxFileError'
     SandboxFileNotFound:
-      description: 'The target file or its parent directory does not exist, or the sandbox is no longer
+      description: '`Resource.NotFound`: the target file or its parent directory does not exist, or the sandbox is no longer
         available (deleted/stopped). These cases are likewise not distinguished.
 
         '
@@ -1516,27 +2997,36 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxFileError'
+    SandboxFilePreconditionFailed:
+      description: '`Resource.StateConflict`: a conditional request header (such as `If-Match`) does not
+        match the file''s current state.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SandboxFileError'
     SandboxFileRateLimited:
-      description: Data-plane rate limit hit; back off and retry.
+      description: '`RateLimit.Exceeded`: data-plane rate limit hit; back off and retry.'
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxFileError'
     SandboxFileUnauthorized:
-      description: '`X-Access-Token` is missing, malformed, expired, or does not belong to this sandbox.
+      description: |
+        `Auth.Unauthorized`: `X-Access-Token` is missing, malformed, expired, or does not belong to this sandbox.
 
-
-        **All of these cases return exactly the same status code and message**, so they cannot be told
-        apart. This is deliberate: distinguishable errors would let callers use this endpoint as a sandbox-existence
+        **All of these cases return exactly the same code and message**, so they cannot be told apart.
+        This is deliberate: distinguishable errors would let callers use this endpoint as a sandbox-existence
         probe.
-
-        '
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/SandboxFileError'
+          example:
+            code: Auth.Unauthorized
+            message: unauthorized
+            request_id: req-3f2b6c1e-8a0d-4f6b-9c3e-2d7a1b5e9f40
     SandboxFileUpstreamError:
-      description: 'The data plane''s own backend call failed. **This is a server-side problem, not a
+      description: '`System.Internal`: the data plane''s own backend call failed. **This is a server-side problem, not a
         caller credential problem** — re-fetching the token will not help; back off and retry, or report
         it.
 
@@ -1613,18 +3103,78 @@ components:
         left in place; `reclaimed` means the artifact was hard-deleted.
 
         '
+    TemplateDefaultUser:
+      type: object
+      additionalProperties: false
+      required: [username]
+      description: |
+        Runtime default identity for Sandboxes launched from this Build.
+        Without it, Sandboxes run as `docker run` would: as the Dockerfile's final
+        USER, else the image's USER, else root, in the final WORKDIR, else the
+        image's, else `/`.
+        Sandboxes run commands as a named account: an image USER given as a
+        numeric uid (or uid:gid) needs a matching /etc/passwd entry in the image,
+        otherwise the Build fails with a reason that names the USER. The group
+        part is ignored.
+        It is applied after all build commands and overrides the final Dockerfile
+        USER at runtime; it does not change the identity of earlier build commands.
+
+        Recommended setup for a custom account: create it in the Dockerfile, give
+        it a working directory it can access, and pass its uid, for example
+        `RUN useradd --uid 9999 --create-home --shell /bin/bash app`,
+        `WORKDIR /home/app`, and `default_user: {username: app, uid: 9999}`.
+
+        - default_user changes the identity only, not the working directory or its
+          permissions. If the account cannot enter the final working directory,
+          commands cannot start there and the Build may fail; declare an
+          accessible WORKDIR to fix it.
+        - With uid, the account must already exist with that UID and an existing
+          home directory; otherwise the Build fails. The platform does not change
+          UID, ownership, groups, or sudo privileges.
+        - A non-root username without uid may be rejected with HTTP 422
+          (Template.ProviderNotSupported); supply uid to avoid this. root may omit uid.
+        - Invalid username, out-of-range uid, or root with a nonzero uid returns
+          HTTP 400 (Parameter.Invalid).
+        - A Build from a base template keeps the base template's user and working
+          directory, as Docker FROM does; set default_user on the child Build to
+          select another. Changing it requires a new Build.
+
+        When omitted, the template's default runtime identity is used. A Build
+        response reports the requested setting; an omitted uid stays omitted.
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 32
+          pattern: '^[a-z_][a-z0-9_-]{0,31}$'
+          example: app
+        uid:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 2147483647
+          description: UID of the account. Recommended for non-root usernames. root only accepts 0.
+          example: 9999
+
     BuildDefinition:
       type: object
       additionalProperties: false
       required:
       - source
       properties:
+        default_user:
+          $ref: '#/components/schemas/TemplateDefaultUser'
         source:
           $ref: '#/components/schemas/BuildSource'
         commands:
           type: array
           maxItems: 100
-          description: Shell command strings executed sequentially during the Build.
+          description: |
+            Shell command strings executed sequentially during the Build. They may
+            run as a non-root account with passwordless sudo: prefix privileged
+            commands with `sudo`, and set ownership of files that the runtime
+            account must use. To control the build identity explicitly, use a
+            Dockerfile source with `USER` instructions, as in a regular Dockerfile.
           items:
             type: string
             minLength: 1
@@ -1652,6 +3202,16 @@ components:
             `[A-Za-z_][A-Za-z0-9_]*`.
 
             '
+        build_timeout_sec:
+          type: integer
+          minimum: 60
+          maximum: 3600
+          description: |
+            Wall-clock budget for this Build in seconds. Omit or null to use the
+            platform default (600). Allowed range: 60–3600. On expiry the Build
+            is finalized as `error` with failure code `TemplateBuild.TimedOut`,
+            its backing build in the selected IDC is cancelled, and its partial
+            artifacts are reclaimed, best-effort.
         start_cmd:
           type: string
           minLength: 1
@@ -1660,7 +3220,34 @@ components:
 
             created from this Template start.
 
+
+            It runs as a boot script before the sandbox''s main process, and the
+
+            sandbox only becomes ready once it returns, so the command must
+
+            terminate. A foreground long-running command (`sleep infinity`, a
+
+            server started in the foreground) leaves the Sandbox stuck
+
+            initializing and every exec against it rejected.
+
+
+            Appending `&` alone is not sufficient: a backgrounded process that
+
+            still holds the inherited stdout/stderr keeps boot blocked just the
+
+            same. Long-running processes must be backgrounded *and* detached
+
+            from those streams, e.g.
+
+            `my-server > /var/log/my-server.log 2>&1 &`.
+
+
+            Resume continues the saved processes without re-running this command.
+
             '
+        file_context:
+          $ref: '#/components/schemas/TemplateFileContext'
     BuildFailure:
       type: object
       nullable: true
@@ -1671,7 +3258,17 @@ components:
       properties:
         code:
           type: string
-          description: Stable failure code.
+          description: 'Stable GMI failure code. Notable values:
+
+            `TemplateBuild.ProviderBuildFailed`, `TemplateBuild.OutOfMemory`,
+
+            `TemplateBuild.OutOfDisk`, `TemplateBuild.TimedOut` (wall-clock
+
+            budget exceeded), `TemplateBuild.Superseded` (replaced by a newer
+
+            rebuild request).
+
+            '
           example: TemplateBuild.OutOfMemory
         message:
           type: string
@@ -1686,9 +3283,10 @@ components:
       properties:
         offset:
           type: integer
-          format: int64
+          format: int32
           minimum: 0
-          description: Normalized zero-based log entry offset.
+          maximum: 2147483647
+          description: Zero-based raw log entry offset before level filtering.
         timestamp:
           type: string
           format: date-time
@@ -1719,12 +3317,13 @@ components:
             $ref: '#/components/schemas/BuildLogEntry'
         next_offset:
           type: integer
-          format: int64
+          format: int32
           minimum: 0
-          description: Offset to use for the next request.
+          maximum: 2147483647
+          description: Raw log offset to use for the next request; advance using this value rather than the number of returned entries. When has_more is false, this remains a valid cursor for polling new logs while the build is running and build logs remain available.
         has_more:
           type: boolean
-          description: Whether more log entries are currently available.
+          description: Whether more matching logs are available or the scan is incomplete. When true, continue using next_offset even if entries is empty.
     BuildLogPageResponse:
       type: object
       additionalProperties: false
@@ -1772,11 +3371,13 @@ components:
       oneOf:
       - $ref: '#/components/schemas/ImageSource'
       - $ref: '#/components/schemas/TemplateSource'
+      - $ref: '#/components/schemas/DockerfileSource'
       discriminator:
         propertyName: type
         mapping:
           image: '#/components/schemas/ImageSource'
           template: '#/components/schemas/TemplateSource'
+          dockerfile: '#/components/schemas/DockerfileSource'
       description: Manual Build source. Sandbox sources use the snapshot endpoint.
     BuildSourceType:
       type: string
@@ -1784,6 +3385,7 @@ components:
       - image
       - template
       - sandbox
+      - dockerfile
       description: Build lineage type.
     BuildStatus:
       type: string
@@ -1807,7 +3409,8 @@ components:
           type: integer
           format: int64
           description: When greater than 0, extends the lifetime of a running sandbox (extend-only, never
-            shortens).
+            shortens). The resulting lifetime must not exceed the data center's maximum (default 86400 seconds);
+            exceeding it returns 400 `Parameter.Invalid`.
     ConnectSandboxControlResponse:
       type: object
       required:
@@ -1887,28 +3490,204 @@ components:
             parameters.
 
             '
-    CreateSandboxControlRequest:
+    SandboxSnapshotStatus:
+      type: string
+      enum: [creating, ready, error, deleting, delete_failed]
+
+    SandboxSnapshot:
       type: object
       required:
-      - template_id
+        - snapshot_id
+        - idc_name
+        - name
+        - status
+        - source_sandbox_id
+        - source_template_id
+        - source_build_id
+        - vcpu
+        - ram_mb
+        - disk_size_mb
+        - architecture
+        - metadata
+        - created_at
+        - updated_at
+      properties:
+        snapshot_id:
+          type: string
+          format: uuid
+          description: Stable durable snapshot identifier.
+        idc_name:
+          type: string
+        name:
+          type: string
+          maxLength: 255
+        status:
+          $ref: '#/components/schemas/SandboxSnapshotStatus'
+        source_sandbox_id:
+          type: string
+          format: uuid
+        source_template_id:
+          type: string
+          format: uuid
+        source_build_id:
+          type: string
+          format: uuid
+        vcpu:
+          type: integer
+          format: int64
+        ram_mb:
+          type: integer
+          format: int64
+        disk_size_mb:
+          type: integer
+          format: int64
+        architecture:
+          type: string
+        product:
+          type: string
+          description: Catalog SKU inherited from the source sandbox, when available.
+        product_name:
+          type: string
+          description: Product display name inherited from the source sandbox.
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        failure_code:
+          type: string
+          description: Stable failure code, present on creation or deletion failure.
+        status_reason:
+          type: string
+          description: Failure detail, present on creation or deletion failure.
+        ready_at:
+          type: string
+          format: date-time
+          description: Time the snapshot became ready.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateSandboxSnapshotRequest:
+      type: object
+      required:
+        - sandbox_id
+      properties:
+        sandbox_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 255
+          description: |
+            Customer-defined name. Leading and trailing whitespace is removed;
+            whitespace-only names become empty.
+            Non-empty names are unique within the organization across all IDCs;
+            conflicts return 409 Resource.AlreadyExists. Creation failure clears the name.
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+
+    UpdateSandboxSnapshotRequest:
+      type: object
+      description: Omitted fields remain unchanged. Metadata replaces the entire map.
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          description: |
+            Customer-defined name. Leading and trailing whitespace is removed;
+            whitespace-only names become empty.
+            Non-empty names are unique within the organization across all IDCs;
+            conflicts return 409 Resource.AlreadyExists. Creation failure clears the name. Use an empty string to clear it.
+        metadata:
+          type: object
+          description: Customer-defined key/value pairs. Use an empty object to clear them.
+          additionalProperties:
+            type: string
+
+    SandboxSnapshotResponse:
+      type: object
+      required:
+        - request_id
+        - data
+      properties:
+        request_id:
+          type: string
+        data:
+          $ref: '#/components/schemas/SandboxSnapshot'
+
+    ListSandboxSnapshotsResponse:
+      type: object
+      required:
+        - request_id
+        - total
+        - page
+        - page_size
+        - items
+      properties:
+        request_id:
+          type: string
+        total:
+          type: integer
+          format: int64
+        page:
+          type: integer
+        page_size:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SandboxSnapshot'
+
+    CreateSandboxControlRequest:
+      type: object
+      additionalProperties: false
+      oneOf:
+      - required: [template_id]
+        not: {required: [snapshot_id]}
+      - required: [snapshot_id]
+        not: {required: [template_id]}
       properties:
         template_id:
           type: string
-          description: Template identifier or name. A snapshot-as-template `snapshotID` is also valid
-            here.
+          description: >-
+            Template identifier or name. Mutually exclusive with snapshot_id: both or neither returns 400
+            `Sandbox.SourceConflict`. A template that cannot be found in the effective IDC returns 400
+            `Parameter.Invalid`.
+        snapshot_id:
+          type: string
+          format: uuid
+          description: >-
+            Ready durable snapshot identifier. Mutually exclusive with template_id. Compute resources are
+            inherited from the snapshot. A snapshot that does not exist returns 404 `Resource.NotFound`.
+        product:
+          type: string
+          description: >-
+            Optional product SKU (see `GET /api/v2/products`, for example `gmi.sandbox.large`). IDCs that
+            do not support selecting a product at create time return 422 `Template.ProviderNotSupported`.
+          example: gmi.sandbox.large
         idc_name:
           type: string
           description: 'Target data center name, e.g. us-central1-c. Optional: when omitted, the organization''s
             configured default data center is used (maintained by the platform administrator); if the
-            organization has no default configured, the request returns 400. Note that Templates are bound
+            organization has no default configured, the request returns 400. If the effective data center is
+            under maintenance, the request returns 409 `IDC.UnderMaintenance`. Note that Templates are bound
             to a data center: the effective data center (whether explicit or default) must match the one
-            that owns the Template referenced by `template_id`, otherwise the request is treated as template-not-found.
+            that owns the Template or snapshot referenced by the request, otherwise a Template is reported as not found (400 `Parameter.Invalid`); a snapshot that exists but belongs to another data center also returns 400 `Parameter.Invalid` (404 `Resource.NotFound` is returned only when the snapshot does not exist).
 
             '
         timeout:
           type: integer
           format: int64
-          description: Time-to-live in seconds. When omitted or 0 or less, 300 seconds is used.
+          minimum: 1
+          description: >-
+            Time-to-live in seconds. When omitted, 300 seconds is used. An explicit value must be at
+            least 1; 0 or a negative value returns 400 `Parameter.Invalid`. At most 86400 (24 hours)
+            in the selected IDC; a larger value returns 400 `Parameter.Invalid`. The limit can differ by IDC.
         env_vars:
           type: object
           additionalProperties:
@@ -1919,6 +3698,31 @@ components:
             type: string
           description: Customer-defined key/value pairs; the platform does not interpret them. The list
             endpoint can filter by them.
+        secure:
+          type: boolean
+          default: false
+          description: Enables traffic-access-token authentication on the user endpoint.
+        auto_pause:
+          type: boolean
+          default: false
+          description: >-
+            When `true`, the sandbox is paused instead of deleted when `timeout` expires (see
+            `lifecycle.on_timeout` on the detail endpoint). IDCs that cannot honour this reject the request.
+        egress_control:
+          type: boolean
+          default: false
+          description: >-
+            Whether to enable dedicated egress control for this sandbox. `false` means public egress;
+            `true` starts from deny-all and allows only the `egress`
+            allowlist. This switch cannot be changed after creation.
+        egress:
+          allOf:
+          - $ref: '#/components/schemas/SandboxEgressPolicy'
+          description: Initial full allowlist when `egress_control` is true; omitted or empty means deny-all.
+        default_user:
+          allOf:
+          - $ref: '#/components/schemas/SandboxDefaultUser'
+          description: OS identity for data-plane operations that do not specify a user. Not supported in every IDC.
     CreateSandboxControlResponse:
       type: object
       required:
@@ -1972,6 +3776,32 @@ components:
             traffic-access-token header). Empty when secure=false.
 
             '
+    CreateTemplateFileRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - name
+      - content_type
+      - sha256
+      - size_bytes
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        content_type:
+          type: string
+          enum:
+          - tar
+          - tgz
+        sha256:
+          type: string
+          pattern: ^[0-9a-fA-F]{64}$
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 1073741824
     CreateTemplateRequest:
       type: object
       additionalProperties: false
@@ -1994,7 +3824,8 @@ components:
           description: 'IDC that permanently owns the Template. Optional: omitted, empty, and whitespace-only
             values are equivalent — the organization''s configured default data center is used (maintained
             by the platform administrator; the same setting used by sandbox creation). If the organization
-            has no default configured, the request returns 400.
+            has no default configured, the request returns 400. If the effective data center is under
+            maintenance, the request returns 409 `IDC.UnderMaintenance`.
 
             '
         resources:
@@ -2008,69 +3839,89 @@ components:
             maxLength: 256
         build:
           allOf:
-          - $ref: '#/components/schemas/BuildDefinition'
+          - $ref: '#/components/schemas/InitialBuildDefinition'
           description: 'Initial Build definition created and started with the Template
 
-            (combined flow, every IDC supports it). Omitting `build` selects the
+            (combined flow, every IDC supports it). A `file_context` cannot be
 
-            split flow: the Template and a `waiting` initial Build are created
+            attached here; use the split flow when files are required. Omitting
 
-            without starting anything, and the Build is started later via
+            `build` selects the split flow: the Template and a `waiting`
 
-            `POST /templates/{template_id}/builds/{id}`. The split flow is not
+            initial Build are created without starting anything, and the Build
 
-            supported in every IDC; unsupported IDCs reject it with 422.
+            is started later via `POST /templates/{template_id}/builds/{id}`.
+
+            The split flow is not supported in every IDC; unsupported IDCs
+
+            reject it with 422.
 
             '
-    CustomResourceSelection:
+    DockerfileSource:
       type: object
       additionalProperties: false
       required:
       - type
-      - cpu_count
-      - memory_mb
-      - disk_size_mb
+      - dockerfile
       properties:
         type:
           type: string
           enum:
-          - custom
-        cpu_count:
-          type: integer
-          minimum: 1
-          maximum: 16
-          description: 'Requested integer vCPU count. Custom resources allow at most
-
-            16 vCPU.
-
-            '
-        memory_mb:
-          type: integer
-          minimum: 1
-          maximum: 65536
-          description: 'Requested integer memory size in MiB. Custom resources allow at
-
-            most 65536 MiB (64 GiB).
-
-            '
-        disk_size_mb:
-          type: integer
-          minimum: 1
-          maximum: 65536
-          description: 'Requested integer boot disk size in MiB. Custom resources allow at
-
-            most 65536 MiB (64 GiB).
-
-            '
-        architecture:
+          - dockerfile
+        dockerfile:
           type: string
-          enum:
-          - x86_64
-          - arm64
-          default: x86_64
-          description: 'Requested CPU architecture. If omitted, x86_64 is used. The
+          minLength: 1
+          maxLength: 262144
+          description: 'Raw Dockerfile text. Supported instructions: FROM (exactly one; no
 
-            selected IDC must support the value.
+            multi-stage), RUN, ENV, WORKDIR, USER, COPY/ADD, CMD/ENTRYPOINT;
+
+            EXPOSE and VOLUME are skipped; anything else is rejected with 400.
+
+
+            A trailing backslash continues an instruction on the next line; blank
+
+            and comment lines inside a continuation are skipped.
+
+
+            The Dockerfile''s final USER is the runtime identity of Sandboxes unless
+
+            `default_user` is set. A Build fails when that account cannot enter the
+
+            final working directory; declare an accessible WORKDIR.
+
+
+            COPY/ADD sources must reference an uploaded Template file as
+
+            `COPY {{file:<file_id>}} /dest` — local paths and URLs are
+
+            rejected, and at most one file may be referenced per build (its
+
+            `file_id` must also be attached via `file_context`, with
+
+            `file_context.destination` omitted).
+
+
+            With a dockerfile source, the sibling `commands` and `envs` fields
+
+            are forbidden: write RUN/ENV lines in the Dockerfile instead.
+
+            CMD/ENTRYPOINT are extracted into the Build''s start command; an
+
+            explicit `start_cmd` takes precedence over them.
+
+
+            ENV values are visible to subsequent build steps and are part of
+
+            the sandbox runtime environment, as under `docker run`; a value
+
+            passed as `env_vars` when creating a Sandbox overrides one of the
+
+            same name. Do not put build-time secrets in ENV: build the Template
+
+            from an image or template source and pass them in `envs`, which
+
+            reach the build steps only.
 
             '
     EffectiveResources:
@@ -2085,27 +3936,15 @@ components:
         cpu_count:
           type: integer
           minimum: 1
-          description: 'Effective integer vCPU count. Operator-managed presets do not use
-
-            the custom-resource maximum.
-
-            '
+          description: Effective integer vCPU count, as configured on the selected preset.
         memory_mb:
           type: integer
           minimum: 1
-          description: 'Effective memory size in MiB. Operator-managed presets are not
-
-            constrained by custom-resource limits.
-
-            '
+          description: Effective memory size in MiB, as configured on the selected preset.
         disk_size_mb:
           type: integer
           minimum: 1
-          description: 'Effective boot disk size in MiB. Operator-managed presets are not
-
-            constrained by custom-resource limits.
-
-            '
+          description: Effective boot disk size in MiB, as configured on the selected preset.
         architecture:
           type: string
           enum:
@@ -2133,6 +3972,9 @@ components:
           type: string
           description: Tracing ID
           example: req-xxxx
+        trace_id:
+          type: string
+          description: Server-side trace identifier for this request; quote it when reporting a problem.
         details:
           type: object
           description: Field-level error details
@@ -2151,11 +3993,89 @@ components:
         image:
           type: string
           minLength: 1
-          description: 'Debian or Ubuntu container image reference. The server validates
+          description: 'OCI container image reference. The following distributions have
 
-            the image against the IDC-supported base OS policy.
+            been validated: Debian/Ubuntu, Fedora/CentOS Stream/Rocky Linux/
+
+            AlmaLinux, Arch Linux, and Alpine Linux.
 
             '
+        registry_credential:
+          $ref: '#/components/schemas/GeneralRegistryCredential'
+    GeneralRegistryCredential:
+      type: object
+      additionalProperties: false
+      required:
+      - type
+      - username
+      - password
+      description: >-
+        A one-time registry credential used to pull the private image named by `image`. `username` and
+        `password` are used only for this build request: they are never persisted and never returned in
+        any response. The Build detail's `registry_authentication` reports only whether a credential was
+        used and of what kind, never the username or password.
+      properties:
+        type:
+          type: string
+          enum:
+          - general
+        username:
+          type: string
+        password:
+          type: string
+          description: Can be a password or an access token.
+    InitialBuildDefinition:
+      type: object
+      additionalProperties: false
+      required:
+      - source
+      description: 'Initial Build definition used only by the combined Template-create
+
+        flow. A file context cannot be attached until the Template has a stable
+
+        ID; use the split create/upload/start flow when files are required.
+
+        '
+      properties:
+        default_user:
+          $ref: '#/components/schemas/TemplateDefaultUser'
+        source:
+          $ref: '#/components/schemas/BuildSource'
+        commands:
+          type: array
+          maxItems: 100
+          description: |
+            Shell command strings executed sequentially during the Build. They may
+            run as a non-root account with passwordless sudo: prefix privileged
+            commands with `sudo`, and set ownership of files that the runtime
+            account must use. To control the build identity explicitly, use a
+            Dockerfile source with `USER` instructions, as in a regular Dockerfile.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 8192
+        envs:
+          type: object
+          maxProperties: 256
+          additionalProperties:
+            type: string
+            maxLength: 32768
+          description: Build-only environment variables; values are write-only.
+        build_timeout_sec:
+          type: integer
+          minimum: 60
+          maximum: 3600
+          description: |
+            Wall-clock budget for this Build in seconds. Omit or null to use the
+            platform default (600). Allowed range: 60–3600. On expiry the Build
+            is finalized as `error` with failure code `TemplateBuild.TimedOut`,
+            its backing build in the selected IDC is cancelled, and its partial
+            artifacts are reclaimed, best-effort.
+        start_cmd:
+          type: string
+          minLength: 1
+          maxLength: 8192
+          description: Launch command applied when Sandboxes from this Template start.
     ListSandboxesControlResponse:
       type: object
       required:
@@ -2252,23 +4172,13 @@ components:
           items:
             $ref: '#/components/schemas/ProductCatalogItem'
     ResourceSelection:
-      oneOf:
+      allOf:
       - $ref: '#/components/schemas/PresetResourceSelection'
-      - $ref: '#/components/schemas/CustomResourceSelection'
-      discriminator:
-        propertyName: type
-        mapping:
-          preset: '#/components/schemas/PresetResourceSelection'
-          custom: '#/components/schemas/CustomResourceSelection'
-      description: 'Resource values may be selected by catalog product SKU or supplied as a
+      description: 'Resource values are selected by catalog product SKU
 
-        custom configuration. Active presets use operator-managed IDC product
+        (`GET /api/v2/products`); the service resolves the active entry from
 
-        values without custom-resource limit validation. Only custom values
-
-        must pass the 16 vCPU / 64 GiB memory / 64 GiB boot disk limits and the
-
-        selected IDC''s representability checks.
+        the product catalog.
 
         '
     ResourceSpecName:
@@ -2280,6 +4190,19 @@ components:
       - LARGE
       - X_LARGE
       description: Stable human-readable Sandbox resource specification label.
+    ResumeSandboxControlRequest:
+      type: object
+      description: The whole body may be omitted; omitting it keeps the runtime that was left at the moment
+        of the pause.
+      properties:
+        timeout:
+          type: integer
+          format: int64
+          description: 'Time-to-live after the resume, in seconds. When omitted or 0 or less, the runtime
+            left at the moment of the pause is kept (paused time is not counted). Subject to the account''s
+            maximum lifetime cap; exceeding it returns 400.
+
+            '
     SandboxControlDetail:
       type: object
       properties:
@@ -2297,16 +4220,19 @@ components:
             '
         template_id:
           type: string
+        snapshot_id:
+          type: string
+          description: Durable snapshot used to create this sandbox; omitted for template-created sandboxes.
         idc_name:
           type: string
         state:
           $ref: '#/components/schemas/SandboxControlState'
         product:
           type: string
-          description: Catalog SKU when created from a preset; empty for custom resources.
+          description: Catalog SKU of the preset the resource was created from.
         product_name:
           type: string
-          description: Preset label when created from a preset; empty for custom resources.
+          description: Human-readable label of the preset the resource was created from.
         resources:
           $ref: '#/components/schemas/SandboxResources'
         metadata:
@@ -2330,9 +4256,74 @@ components:
           description: UTC timestamp, e.g. 2026-08-04T09:12:31.123456789Z
         end_at:
           type: string
-          description: UTC timestamp; the expiry time
+          description: 'UTC timestamp; the expiry time of the runtime budget. A pause does not consume
+            runtime, so this field is frozen while `paused` (and may therefore already be in the past)
+            and is shifted forward by the paused duration on resume. The runtime left on a paused instance
+            is `end_at - paused_at`, not `end_at - now`.
+
+            '
+        paused_at:
+          type: string
+          description: 'Time the instance entered `paused` (UTC), and the baseline the runtime budget
+            is frozen against. Returned while `paused` and `resuming`; cleared once a resume is confirmed
+            `running`.
+
+            '
+        paused_expire_at:
+          type: string
+          description: 'End of the pause retention window (UTC). Returned while `paused` and `resuming`;
+            cleared once a resume is confirmed `running`. An instance not resumed by then is reclaimed
+            together with its disk. This is a separate budget from `end_at` — this one bounds how long
+            an instance may stay paused, `end_at` how long it may run.
+
+            '
+        pause:
+          type: object
+          description: 'Why the instance is paused. Returned while `pausing`, `paused` and `resuming`;
+            cleared once a resume is confirmed `running`. A pause you requested and a pause the platform
+            applied look the same otherwise; `code` tells them apart, and
+            `Sandbox.BillingInsufficientBalance` means the sandbox stays paused until the account is
+            topped up and the sandbox is resumed.
+
+            '
+          required:
+            - code
+            - initiator
+            - message
+            - requested_at
+          properties:
+            code:
+              type: string
+              description: '`Sandbox.UserPaused`: paused through `POST /sandboxes/{id}/pause`.
+                `Sandbox.BillingInsufficientBalance`: paused by the platform because the account balance
+                is insufficient. `Sandbox.Expired`: paused automatically when the runtime budget ran out
+                (`lifecycle.on_timeout=pause`).
+
+                '
+              example: Sandbox.BillingInsufficientBalance
+            initiator:
+              type: string
+              enum: [user, billing, lifecycle]
+            message:
+              type: string
+              description: Fixed customer-facing text for `code`.
+            requested_at:
+              type: string
+              description: 'When the pause was requested (UTC). Distinct from `paused_at`, which is the
+                baseline the runtime budget is frozen against.
+
+                '
         domain:
           type: string
+        deletion:
+          $ref: '#/components/schemas/SandboxDeletion'
+        lifecycle:
+          $ref: '#/components/schemas/SandboxControlLifecycle'
+        egress_control:
+          type: boolean
+          description: Whether dedicated egress control was enabled for this sandbox at creation.
+        egress:
+          $ref: '#/components/schemas/SandboxEgressPolicy'
     SandboxControlDetailResponse:
       type: object
       required:
@@ -2351,17 +4342,125 @@ components:
         expressed separately and is also folded into `provisioning`.
 
 
-        `deleting` is not listed here: once deletion is accepted the instance is no longer queryable (the
-        detail endpoint returns 404), and that state appears only in the deletion endpoint''s acceptance
-        response. Suspend-related states likewise never appear — suspend is not offered externally.
+        `deleting` / `deleted`: deletion is a soft delete - once accepted the instance enters `deleting`,
+        and after the backing resources are confirmed released it reaches the terminal `deleted` state,
+        whose record is kept permanently. In both states the detail endpoint still returns 200 and the
+        `deletion` object says who initiated the deletion and why; the data plane returns 404 for them, as do PATCH, connect, pause, resume and
+        timeout; `/actions` returns 409, or 400 when the sandbox was created without `egress_control`.
+        DELETE can be repeated: it returns 202 while `deleting` and 200 once `deleted`. The default list excludes both states, and `state=deleted`
+        returns deleted records explicitly.
+
+
+        `pausing` / `paused` / `resuming`: pause and resume are an explicit pair of lifecycle operations
+        (see `POST /sandboxes/{id}/pause` and `POST /sandboxes/{id}/resume`); both return 202 on acceptance
+        and the settled outcome is read back from this field. `pausing` and `resuming` are transitional.
+        `paused` means the disk is retained and the instance is no longer running, and no longer consuming
+        its runtime budget either (`end_at` is frozen and may already be in the past); it is reclaimed
+        at the end of the retention window `paused_expire_at`.
 
         '
       enum:
       - provisioning
       - running
+      - pausing
+      - paused
+      - resuming
       - checkpointing
       - updating
       - failed
+      - deleting
+      - deleted
+    SandboxDefaultUser:
+      type: object
+      additionalProperties: false
+      required:
+      - username
+      - uid
+      description: >-
+        OS identity used by data-plane operations that do not specify a user. Only some IDCs support
+        this, and only `{"username":"root","uid":0}` is accepted. An IDC that does not support it returns
+        422 `Template.ProviderNotSupported`; any other value returns 400 `Parameter.Invalid`. When omitted,
+        the sandbox keeps its default user.
+      properties:
+        username:
+          type: string
+          enum:
+          - root
+        uid:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 0
+    SandboxEgressPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        allowed_hostnames:
+          type: array
+          items:
+            type: string
+          description: Allowed hostnames; a leading `*.` wildcard is supported.
+        allowed_cidrs:
+          type: array
+          items:
+            type: string
+          description: Allowed IPv4 CIDRs.
+    SandboxControlLifecycle:
+      type: object
+      required:
+      - auto_resume
+      - on_timeout
+      properties:
+        auto_resume:
+          type: boolean
+        on_timeout:
+          type: string
+          enum:
+          - pause
+          - kill
+          description: What happens when the sandbox runtime budget runs out. `pause` pauses the sandbox
+            (see `auto_pause` on create); `kill` deletes it.
+    SandboxDeletion:
+      type: object
+      description: >-
+        Present only when `state` is `deleting` or `deleted`; explains who initiated the deletion and why.
+        `message` is a fixed text for `code`; raw billing or backend error text is never exposed.
+      required:
+      - code
+      - initiator
+      - message
+      - requested_at
+      - completed_at
+      properties:
+        code:
+          type: string
+          description: >-
+            Deletion reason code. `Sandbox.UserDeleted`: deleted by the user. `Sandbox.BillingInsufficientBalance`,
+            `Sandbox.BillingNoPermission`, `Sandbox.BillingProductNotFound`, `Sandbox.BillingOrderCreateFailed`:
+            billing order creation failed. `Sandbox.BillingSuspended`: stopped for non-payment.
+            `Sandbox.Expired`: reclaimed at expiry. `Sandbox.ProvisionTimedOut`, `Sandbox.ProvisionFailed`:
+            creation did not become ready. `Sandbox.ResumeTimedOut`, `Sandbox.PauseFailed`: reclaimed after a
+            stuck pause or resume. `Sandbox.ProviderGone`: the backing instance no longer exists.
+            `Sandbox.Unknown`: reason not recorded.
+          example: Sandbox.UserDeleted
+        initiator:
+          type: string
+          enum:
+          - user
+          - billing
+          - lifecycle
+          - system
+          description: Who initiated the deletion - the user, billing, the lifecycle (TTL expiry), or the platform.
+        message:
+          type: string
+          description: Fixed user-facing text.
+        requested_at:
+          type: string
+          description: When the deletion intent was accepted (UTC); also the end point of billing metering.
+        completed_at:
+          type: string
+          nullable: true
+          description: When the release was confirmed and the sandbox became `deleted` (UTC); null while `deleting`.
     SandboxControlSummary:
       type: object
       properties:
@@ -2379,6 +4478,9 @@ components:
             '
         template_id:
           type: string
+        snapshot_id:
+          type: string
+          description: Durable snapshot used to create this sandbox; omitted for template-created sandboxes.
         idc_name:
           type: string
         state:
@@ -2407,17 +4509,23 @@ components:
               format: uuid
             state:
               type: string
-              example: deleting
+              enum:
+              - deleted
+              - deleting
+              description: '`deleted` means the resources were released within this request (returned with
+                200); `deleting` means the release continues asynchronously (returned with 202).'
+              example: deleted
     SandboxExecAcceptedResponse:
       type: object
       required:
+      - request_id
       - execution_id
       - sandbox_id
       - status
       properties:
         request_id:
           type: string
-          description: Echo of X-Request-ID when supplied.
+          description: Server-generated request ID (`req-<uuid>`), identical to the `X-Request-ID` response header.
         execution_id:
           type: string
           format: uuid
@@ -2430,20 +4538,24 @@ components:
           $ref: '#/components/schemas/SandboxExecStatus'
     SandboxExecErrorResponse:
       type: object
+      description: Data-plane error body, in the platform error envelope (without `trace_id`).
       required:
       - code
       - message
+      - request_id
       properties:
         code:
           type: string
-          description: Machine-readable execution error code.
+          description: Stable machine-readable error code. A 401 is always `Auth.Unauthorized`.
           example: Execution.InvalidRequest
         message:
           type: string
           description: Sanitized human-readable error message.
         request_id:
           type: string
-          description: Request correlation identifier.
+          description: Server-generated ID for this request (`req-<uuid>`), identical to the `X-Request-ID`
+            response header. A caller-supplied `X-Request-ID` is not used.
+          example: req-3f2b6c1e-8a0d-4f6b-9c3e-2d7a1b5e9f40
         details:
           type: object
           additionalProperties: true
@@ -2467,18 +4579,41 @@ components:
           properties:
             command:
               type: string
-              description: Shell command to execute.
+              minLength: 1
+              description: >-
+                Shell command to execute. Required and non-empty; at most 128 KiB (counted in bytes) and must not contain NUL. A violation returns 400 `Execution.InvalidRequest`.
             envs:
               type: object
               additionalProperties:
                 type: string
-              description: Environment variables for the command.
+              description: >-
+                Environment variables for the command. Names must be valid environment variable names (letters,
+                digits and underscore, not starting with a digit) of at most 128 bytes, and each value is at
+                most 64 KiB; otherwise the request returns 400 `Execution.InvalidRequest`.
             cwd:
               type: string
-              description: Absolute working directory. Defaults to `/home/user`.
+              description: >-
+                Working directory the command runs in (relative paths in the command resolve against it). It must be absolute and normalized: no `.`, `..` or empty segments (a trailing `/` is
+                normalized away); otherwise 400 `Execution.InvalidRequest`. When omitted, defaults to the
+                template's working directory (the image or Dockerfile WORKDIR; depends on the template and
+                IDC, for example `/` or `/home/user`; pass `cwd` explicitly when it matters). If the directory
+                does not exist the execution ends with status `failed` and `failure_reason` `cwd_not_found`. If the path exists but is not a directory the execution ends with `failed` and `failure_reason` `cwd_not_directory`.
+            execution_timeout_seconds:
+              type: integer
+              format: int32
+              minimum: 1
+              maximum: 3600
+              default: 300
+              description: >-
+                Time limit for this command, in seconds. When the limit is reached the command is
+                terminated (SIGTERM, then SIGKILL after a grace period) and the execution ends with status `timed_out` and a null `exit_code`.
+                A value outside 1..3600 returns 400. This is unrelated to `wait_timeout_seconds`,
+                which only bounds how long the request waits for a result. A command stopped this way reports
+                `termination_reason` `execution_timeout`.
     SandboxExecResultResponse:
       type: object
       required:
+      - request_id
       - execution_id
       - sandbox_id
       - status
@@ -2492,7 +4627,7 @@ components:
       properties:
         request_id:
           type: string
-          description: Echo of X-Request-ID when supplied.
+          description: Server-generated request ID (`req-<uuid>`), identical to the `X-Request-ID` response header.
         execution_id:
           type: string
           format: uuid
@@ -2502,19 +4637,58 @@ components:
             the instance by the key in the host).
         status:
           $ref: '#/components/schemas/SandboxExecStatus'
+        termination_reason:
+          type: string
+          enum:
+          - explicit_cancel
+          - execution_timeout
+          - runtime_terminated
+          description: >-
+            Why an execution that did not finish on its own ended. Omitted when the
+            command exited by itself, including when it was killed by a signal from
+            inside the sandbox (see exit_code). explicit_cancel: the execution was
+            cancelled (status cancelled). execution_timeout: the execution reached its
+            timeout (status timed_out). runtime_terminated: the command's process is gone
+            without having reported an outcome, for example the sandbox was resumed from a
+            pause without memory, or its output stream was lost for good, so the outcome of
+            the command is unknown (status failed). Pausing a sandbox does not by itself end
+            an execution: after a pause with memory the command continues and the execution
+            reports its real result.
+          example: runtime_terminated
+        failure_reason:
+          type: string
+          enum:
+          - cwd_not_found
+          - cwd_not_directory
+          - permission_denied
+          description: >-
+            Classified process startup failure. Omitted
+            when no recognized startup cause is available. cwd_not_found means
+            the working directory does not exist; cwd_not_directory means the
+            working directory is not a directory; permission_denied means startup
+            was denied without a reliably identified operation. Contains no path
+            or raw upstream error. Runtime interruptions use termination_reason.
         exit_code:
           type: integer
           format: int32
           nullable: true
-          description: Process exit code; null while non-terminal or when canceled.
+          description: >-
+            Exit status of the command. A command killed by a signal (for example an
+            out-of-memory kill) reports 128 + signal (137 for SIGKILL) with status failed
+            and no termination_reason. Null while non-terminal, and when the execution was
+            cancelled, timed out, or its runtime was terminated.
         stdout:
           type: string
           nullable: true
-          description: Captured standard output, or null while not yet available.
+          description: >-
+            Captured standard output, or null while not yet available. At most 1 MiB is kept; further output
+            is dropped and `stdout_truncated` is true.
         stderr:
           type: string
           nullable: true
-          description: Captured standard error, or null while not yet available.
+          description: >-
+            Captured standard error, or null while not yet available. At most 1 MiB is kept; further output
+            is dropped and `stderr_truncated` is true.
         stdout_truncated:
           type: boolean
           nullable: true
@@ -2531,14 +4705,15 @@ components:
           nullable: true
     SandboxExecStatus:
       type: string
-      description: Public lifecycle status of a sandbox execution.
+      description: Public lifecycle status of a sandbox execution. `timed_out` means the per-command time limit (`execution_timeout_seconds`) was reached and the command was terminated (SIGTERM, then SIGKILL after a grace period); `exit_code` is then null.
       enum:
       - pending
       - running
-      - canceling
+      - cancelling
       - succeeded
       - failed
-      - canceled
+      - cancelled
+      - timed_out
     SandboxFailure:
       type: object
       description: Non-empty only when state=failed. The message is sanitized and contains no backend
@@ -2572,29 +4747,209 @@ components:
           enum:
           - file
           description: Entry type. Only files are written today, so this is always `file`.
+    SandboxShellStatus:
+      type: string
+      description: |
+        Public status of the sandbox shell session.
+        - `creating`: a launch is in progress (only appears with `202`).
+        - `ready`: the PTY exists and can be attached.
+        - `attached`: the shell exists and currently has an active WebSocket
+          connection (a second attach would get `409`).
+        - `closed`: the shell has been terminated by `action=close` and can
+          never be re-attached.
+      enum:
+        - creating
+        - ready
+        - attached
+        - closed
+
+    SandboxShellLaunchResponse:
+      type: object
+      required:
+        - request_id
+        - sandbox_key
+        - status
+        - connect_url
+      properties:
+        request_id:
+          type: string
+          description: Server-generated request ID (`req-<uuid>`), identical to the `X-Request-ID` response header.
+        sandbox_key:
+          type: string
+          description: Echo of the data-plane addressing key (i.e. `sandbox_key`, the leftmost label of the request host).
+        status:
+          $ref: '#/components/schemas/SandboxShellStatus'
+        connect_url:
+          type: string
+          description: |
+            **Relative** path of the WebSocket attach endpoint. The full attach
+            address is `wss://{sandbox_key}.{domain}{connect_url}` — the same
+            data-plane host this request was sent to, with the scheme switched
+            to `wss`. This is always the sandbox's own data-plane endpoint.
+          example: /shell/connect
+
+    SandboxShellCreatingResponse:
+      type: object
+      required:
+        - request_id
+        - sandbox_key
+        - status
+        - code
+      properties:
+        request_id:
+          type: string
+          description: Server-generated request ID (`req-<uuid>`), identical to the `X-Request-ID` response header.
+        sandbox_key:
+          type: string
+          description: Echo of the data-plane addressing key (i.e. `sandbox_key`, the leftmost label of the request host).
+        status:
+          type: string
+          enum:
+            - creating
+          description: Always `creating` on this response.
+        code:
+          type: string
+          enum:
+            - Shell.Creating
+          description: |
+            Stable machine-readable hint that another request is currently
+            creating the shell. Retry `POST /shell` shortly; the retry never
+            creates a duplicate PTY.
+
+    SandboxShellControlRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - action
+      description: |
+        Exactly one control command:
+        - `action=resize` requires `cols` and `rows` (each 1..1000) and an
+          active WebSocket attach.
+        - `action=close` takes no other fields and does not require an active
+          connection.
+        Unknown `action` values or extra fields are rejected with
+        `400 Shell.InvalidRequest`.
+      properties:
+        action:
+          type: string
+          enum:
+            - resize
+            - close
+          description: |
+            `resize` applies a new terminal size to the live PTY; `close`
+            irrevocably terminates the shell (PTY killed, state deleted, any
+            existing WebSocket severed within about one second).
+        cols:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          description: Terminal width in columns. Required when `action=resize`; must be omitted for `close`.
+        rows:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          description: Terminal height in rows. Required when `action=resize`; must be omitted for `close`.
+
+    SandboxShellControlResponse:
+      type: object
+      required:
+        - request_id
+        - sandbox_key
+        - status
+      properties:
+        request_id:
+          type: string
+          description: Server-generated request ID (`req-<uuid>`), identical to the `X-Request-ID` response header.
+        sandbox_key:
+          type: string
+          description: Echo of the data-plane addressing key (i.e. `sandbox_key`, the leftmost label of the request host).
+        status:
+          $ref: '#/components/schemas/SandboxShellStatus'
+
+    SandboxShellErrorResponse:
+      type: object
+      description: Data-plane error body, in the platform error envelope (without `trace_id`).
+      required:
+        - code
+        - message
+        - request_id
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code (`Shell.*`; a 401 is always `Auth.Unauthorized`). The set of codes and their meanings are documented on each response.
+          example: Shell.NotFound
+        message:
+          type: string
+          description: Stable, sanitized human-readable error message.
+        request_id:
+          type: string
+          description: Server-generated ID for this request (`req-<uuid>`), identical to the `X-Request-ID`
+            response header. A caller-supplied `X-Request-ID` is not used.
+          example: req-3f2b6c1e-8a0d-4f6b-9c3e-2d7a1b5e9f40
+
     SandboxFileError:
       type: object
-      description: 'Data-plane error body. **It has only `message`** — no `code`, and no platform `{request_id,
-        data}` envelope. This differs from every endpoint under `/api/v2`.
+      description: |
+        Data-plane error body, in the platform error envelope (without `trace_id`). Branch on `code`;
+        `message` is for humans only — its wording is not a contract and must not be used in program logic.
 
+        `code` uses the platform-wide error codes: `Parameter.Invalid` (400/405/406/413/415/416),
+        `Auth.Unauthorized` (401), `Auth.Forbidden` (403), `Resource.NotFound` (404),
+        `Resource.StateConflict` (409/412), `RateLimit.Exceeded` (429), and `System.Internal` (5xx).
 
-        The reason is that the data plane and the control plane are separate entry points: requests do
-        not pass through the platform gateway, so there is no platform `request_id` and no context for
-        producing platform business error codes. Branch on the HTTP status code; `message` is for humans
-        only — its wording is not a contract and must not be used in program logic.
-
-
-        `message` is always the server''s own wording: raw backend error text may contain internal details
+        `message` is always the server's own wording: raw backend error text may contain internal details
         such as absolute paths inside the sandbox, so it is logged only and never returned.
-
-        '
       required:
+      - code
       - message
+      - request_id
       properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+          example: Resource.NotFound
         message:
           type: string
           description: Human-readable error text. Not stable; do not parse.
-          example: unauthorized
+          example: file not found
+        request_id:
+          type: string
+          description: Server-generated ID for this request (`req-<uuid>`), identical to the `X-Request-ID`
+            response header. A caller-supplied `X-Request-ID` is not used.
+          example: req-3f2b6c1e-8a0d-4f6b-9c3e-2d7a1b5e9f40
+    SandboxLifecycleAcceptedResponse:
+      type: object
+      description: Shared 202 acceptance body for pause and resume.
+      required:
+      - request_id
+      - data
+      properties:
+        request_id:
+          type: string
+          description: Request tracing ID
+        data:
+          type: object
+          required:
+          - id
+          - state
+          properties:
+            id:
+              type: string
+              format: uuid
+            state:
+              type: string
+              enum:
+              - pausing
+              - paused
+              - resuming
+              - running
+              description: 'State on the row at the moment of acceptance, **not** the final outcome: it
+                is `pausing` for a pause, and `resuming` (or `running` when the backing infrastructure
+                settles within the request) for a resume. Always treat `GET /sandboxes/{id}` as
+                authoritative for the settled state.
+
+                '
+              example: pausing
     SandboxMutationErrorResponse:
       description: 'Error response for a failed runtime mutation. The top level keeps the platform''s
         standard error envelope (ErrorResponse); the sandbox-specific `state` / `last_mutation` go in
@@ -2613,6 +4968,51 @@ components:
                 description: The sandbox's actual lifecycle state after this operation failed
               last_mutation:
                 $ref: '#/components/schemas/SandboxMutationResult'
+    ExecuteSandboxNetworkActionRequest:
+      type: object
+      required:
+      - action
+      - params
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum:
+          - update_egress_policy
+        params:
+          $ref: '#/components/schemas/SandboxEgressPolicy'
+    UpdateSandboxEgressPolicyResult:
+      type: object
+      required:
+      - state
+      - last_mutation
+      - applied
+      properties:
+        state:
+          $ref: '#/components/schemas/SandboxControlState'
+        last_mutation:
+          $ref: '#/components/schemas/SandboxMutationResult'
+        applied:
+          type: string
+          enum:
+          - immediate
+          - eventual
+          description: >-
+            `immediate`: the change is already in effect; existing connections are not promised to drop.
+            `eventual`: the change is accepted and still propagating to the running sandbox. Either value
+            means the change has been accepted — there is no "saved, takes effect on next resume" outcome;
+            a change submitted while paused returns 409 instead.
+    UpdateSandboxEgressPolicyResponse:
+      type: object
+      required:
+      - request_id
+      - data
+      properties:
+        request_id:
+          type: string
+          description: Request tracing ID
+        data:
+          $ref: '#/components/schemas/UpdateSandboxEgressPolicyResult'
     SandboxMutationResult:
       type: object
       description: 'The most recent operation and its outcome. status=pending means the command has been
@@ -2630,6 +5030,9 @@ components:
           - create
           - delete
           - set_timeout
+          - update_egress_policy
+          - update_ingress_policy
+          - rotate_traffic_token
         status:
           type: string
           enum:
@@ -2666,7 +5069,8 @@ components:
           type: integer
           format: int64
           description: Time-to-live in seconds, measured from the current time. When omitted or 0 or less,
-            300 seconds is used.
+            300 seconds is used. At most the data center's maximum lifetime (default 86400 seconds);
+            exceeding it returns 400 `Parameter.Invalid`.
     SetSandboxControlTimeoutResponse:
       type: object
       required:
@@ -2700,9 +5104,9 @@ components:
                 '
     Template:
       type: object
-      additionalProperties: false
       required:
       - id
+      - status
       - name
       - idc_name
       - source_type
@@ -2712,9 +5116,25 @@ components:
       - created_at
       - updated_at
       properties:
+        status:
+          type: string
+          enum:
+          - creating
+          - ready
+          - error
+          - deleting
+          - delete_failed
+          - deleted
+          description: Resource lifecycle; deletion failures keep references fenced.
+        failure_code:
+          type: string
+          description: Stable deletion failure code; retry DELETE after resolving the cause.
+        status_reason:
+          type: string
+          description: Safe description of the deletion failure.
         id:
           type: string
-          description: Immutable Template identifier.
+          description: Immutable GMI Template identifier.
         name:
           type: string
           description: Organization-scoped display name.
@@ -2726,15 +5146,32 @@ components:
           description: Immutable owning IDC identifier.
         source_type:
           $ref: '#/components/schemas/BuildSourceType'
+        image_mirror:
+          type: object
+          nullable: true
+          description: Image mirror configuration of the Template. Always null for new Templates; the platform
+            no longer accepts image mirror configuration, so only older Templates may carry a value.
+          required:
+          - endpoint
+          - repository
+          - api_key_configured
+          properties:
+            endpoint:
+              type: string
+            repository:
+              type: string
+            api_key_configured:
+              type: boolean
+              description: Whether an API key is stored. The key itself is never returned.
         product:
           type: string
           nullable: true
-          description: Catalog SKU when created from a preset; null for custom resources.
+          description: Catalog SKU of the preset the Build was created from.
         product_name:
           allOf:
           - $ref: '#/components/schemas/ResourceSpecName'
           nullable: true
-          description: Preset label when created from a preset; null for custom resources.
+          description: Human-readable label of the preset the Build was created from.
         resources:
           $ref: '#/components/schemas/EffectiveResources'
         labels:
@@ -2768,7 +5205,6 @@ components:
           description: Template update time in UTC.
     TemplateBuild:
       type: object
-      additionalProperties: false
       required:
       - id
       - template_id
@@ -2777,14 +5213,17 @@ components:
       - artifact_state
       - source_type
       - resources
+      - build_timeout_sec
       - created_at
       properties:
+        default_user:
+          $ref: '#/components/schemas/TemplateDefaultUser'
         id:
           type: string
-          description: Immutable Build identifier.
+          description: Immutable GMI Build identifier.
         template_id:
           type: string
-          description: Owning Template identifier.
+          description: Owning GMI Template identifier.
         trigger:
           $ref: '#/components/schemas/BuildTrigger'
         status:
@@ -2797,17 +5236,33 @@ components:
           type: object
           description: Sanitized Build lineage. Internal IDs and credentials are omitted.
           additionalProperties: true
+        registry_authentication:
+          nullable: true
+          description: >-
+            Whether this Build used a registry credential; non-null only when `registry_credential` was
+            supplied at create time. Reports only whether one was used and of what kind, never the
+            username or password.
+          type: object
+          additionalProperties: false
+          required:
+          - configured
+          - type
+          properties:
+            configured:
+              type: boolean
+            type:
+              type: string
         resources:
           $ref: '#/components/schemas/EffectiveResources'
         product:
           type: string
           nullable: true
-          description: Catalog SKU when created from a preset; null for custom resources.
+          description: Catalog SKU of the preset the Build was created from.
         product_name:
           allOf:
           - $ref: '#/components/schemas/ResourceSpecName'
           nullable: true
-          description: Preset label when created from a preset; null for custom resources.
+          description: Human-readable label of the preset the Build was created from.
         commands:
           type: array
           description: Build command strings. Empty for snapshot Builds.
@@ -2817,6 +5272,16 @@ components:
           type: string
           nullable: true
           description: Persisted launch command for this Build.
+        ready_cmd:
+          type: string
+          nullable: true
+          description: Readiness check command, unrelated to any registry credential.
+        build_timeout_sec:
+          type: integer
+          minimum: 0
+          description: |
+            Effective wall-clock budget for this Build (seconds). 0 while the
+            Build has not started, or for Builds that predate this field.
         failure:
           $ref: '#/components/schemas/BuildFailure'
         created_at:
@@ -2833,6 +5298,32 @@ components:
           format: date-time
           nullable: true
           description: Build terminal time in UTC.
+    TemplateBuildMutation:
+      type: object
+      additionalProperties: false
+      required:
+      - request_id
+      - data
+      properties:
+        request_id:
+          type: string
+          description: HTTP request correlation identifier.
+        data:
+          type: object
+          additionalProperties: false
+          required:
+          - id
+          - template_id
+          - status
+          properties:
+            id:
+              type: string
+              description: The Build this mutation created or started.
+            template_id:
+              type: string
+              description: Owning GMI Template identifier.
+            status:
+              $ref: '#/components/schemas/BuildStatus'
     TemplateBuildResponse:
       type: object
       additionalProperties: false
@@ -2860,16 +5351,144 @@ components:
           additionalProperties: false
           required:
           - id
-          - deleted
+          - status
           properties:
             id:
               type: string
-              description: Logically deleted Template identifier.
-            deleted:
-              type: boolean
+              format: uuid
+              description: Template identifier.
+            status:
+              type: string
               enum:
-              - true
-              description: Confirms that logical deletion is complete.
+              - deleting
+    TemplateFile:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - name
+      - state
+      - size_bytes
+      - sha256
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        state:
+          type: string
+          enum:
+          - awaiting_upload
+          - verifying
+          - importing
+          - ready
+          - failed
+          - expired
+        size_bytes:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        failure_code:
+          type: string
+        status_reason:
+          type: string
+    TemplateFileContext:
+      type: object
+      additionalProperties: false
+      required:
+      - file_id
+      properties:
+        file_id:
+          type: string
+          format: uuid
+          description: GMI file identifier returned by the upload initialization endpoint.
+        destination:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          pattern: ^/
+          description: 'Absolute destination copied from the archive root during the Build.
+
+            Required for image/template sources; forbidden for a dockerfile
+
+            source, whose `COPY {{file:...}} /dest` lines carry their own
+
+            destinations.
+
+            '
+    TemplateFileResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - request_id
+      - data
+      properties:
+        request_id:
+          type: string
+        data:
+          $ref: '#/components/schemas/TemplateFile'
+    TemplateFileUpload:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - state
+      - status_url
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum:
+          - awaiting_upload
+          - verifying
+          - importing
+          - ready
+          - failed
+          - expired
+        status_url:
+          type: string
+        upload:
+          type: object
+          description: Present only while the file is still awaiting upload.
+          additionalProperties: false
+          required:
+          - method
+          - url
+          - headers
+          - expires_at
+          properties:
+            method:
+              type: string
+              enum:
+              - PUT
+            url:
+              type: string
+              format: uri
+            headers:
+              type: object
+              additionalProperties:
+                type: string
+            expires_at:
+              type: string
+              format: date-time
+    TemplateFileUploadResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - request_id
+      - data
+      properties:
+        request_id:
+          type: string
+        data:
+          $ref: '#/components/schemas/TemplateFileUpload'
     TemplateMutationAccepted:
       type: object
       additionalProperties: false
@@ -2890,7 +5509,7 @@ components:
           properties:
             id:
               type: string
-              description: Created Template identifier.
+              description: Created GMI Template identifier.
             build_id:
               type: string
               description: Created initial or snapshot Build identifier.
@@ -2952,7 +5571,7 @@ components:
           - template
         template_id:
           type: string
-          description: Parent Template identifier in the same IDC.
+          description: Parent GMI Template identifier in the same IDC.
         build_id:
           type: string
           description: 'Optional parent Build identifier. When omitted, the parent''s
@@ -2974,7 +5593,7 @@ components:
       type: object
       additionalProperties: false
       minProperties: 1
-      description: 'Mutable Template metadata patch. Omitted fields are left unchanged;
+      description: 'Template metadata patch. Omitted fields are left unchanged;
 
         `labels` replaces the stored map wholesale when provided.
 

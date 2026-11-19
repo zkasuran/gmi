@@ -5,6 +5,9 @@ import subprocess
 import pytest
 
 
+# The tests run install.sh with /bin/sh and create symlinks, so they need a POSIX host.
+pytestmark = pytest.mark.skipif(not Path("/bin/sh").exists(), reason="install.sh tests need /bin/sh")
+
 SCRIPT = Path(__file__).resolve().parents[1] / "install.sh"
 BASE = "git+https://github.com/zkasuran/gmi@"
 
@@ -51,9 +54,9 @@ fi
     (("pip",), ["python3", "-m", "pip", "install", "--user"]),
 ])
 @pytest.mark.parametrize(("arguments", "environment", "package"), [
-    ((), {}, BASE + "v1.0.0"),
-    (("--mcp",), {}, "gmi[mcp] @ " + BASE + "v1.0.0"),
-    ((), {"GMI_INSTALL_MCP": "1"}, "gmi[mcp] @ " + BASE + "v1.0.0"),
+    ((), {}, BASE + "v1.0.2"),
+    (("--mcp",), {}, "gmi[mcp] @ " + BASE + "v1.0.2"),
+    ((), {"GMI_INSTALL_MCP": "1"}, "gmi[mcp] @ " + BASE + "v1.0.2"),
     ((), {"GMI_REF": "release/test"}, BASE + "release/test"),
     (("--mcp",), {"GMI_REF": "release/test"}, "gmi[mcp] @ " + BASE + "release/test"),
     ((), {"GMI_REF": "test'quote"}, BASE + "test'quote"),

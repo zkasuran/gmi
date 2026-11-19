@@ -1,6 +1,7 @@
 """Pure formatting, parsing, credential and local CLI checks; no API mocks."""
 
 import json
+import os
 import stat
 
 from click.testing import CliRunner
@@ -22,10 +23,12 @@ def private_home(tmp_path, monkeypatch):
 def test_config_permissions_and_round_trip():
     save_key('test-key-"quoted"-abcd')
     assert read_key() == 'test-key-"quoted"-abcd'
-    assert stat.S_IMODE(config_path().stat().st_mode) == 0o600
+    if os.name != "nt":  # Windows has no POSIX permission bits.
+        assert stat.S_IMODE(config_path().stat().st_mode) == 0o600
     save_key("replacement")
     assert read_key() == "replacement"
-    assert stat.S_IMODE(config_path().stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(config_path().stat().st_mode) == 0o600
     assert list(config_path().parent.iterdir()) == [config_path()]
 
 

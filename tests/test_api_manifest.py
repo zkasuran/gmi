@@ -76,7 +76,7 @@ def test_all_parameters_and_required_flags_match_vendored_specs():
                     for p in props:
                         assert p["required"] == (p["name"] in schema.get("required", [])), (key, p)
     assert visited == set(actual)
-    assert len(actual) == manifest()["total"] == 93
+    assert len(actual) == manifest()["total"] == 108
 
 
 def test_manifest_is_current():

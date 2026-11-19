@@ -3384,7 +3384,7 @@
         "schema": {
           "properties": {
             "timeout": {
-              "description": "When greater than 0, extends the lifetime of a running sandbox (extend-only, never shortens).",
+              "description": "When greater than 0, extends the lifetime of a running sandbox (extend-only, never shortens). The resulting lifetime must not exceed the data center's maximum (default 86400 seconds); exceeding it returns 400 `Parameter.Invalid`.",
               "format": "int64",
               "type": "integer"
             }
@@ -3400,7 +3400,7 @@
     },
     {
       "cookie_parameters": [],
-      "description": "Creates a sandbox from a `template_id`",
+      "description": "Creates a sandbox from exactly one source: `template_id` or a ready `snapshot_id`",
       "group": "Sandbox",
       "header_parameters": [
         {
@@ -3420,7 +3420,17 @@
         "properties": [
           {
             "name": "template_id",
-            "required": true,
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "snapshot_id",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "product",
+            "required": false,
             "type": "string"
           },
           {
@@ -3442,11 +3452,122 @@
             "name": "metadata",
             "required": false,
             "type": "object"
+          },
+          {
+            "name": "secure",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "auto_pause",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "egress_control",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "egress",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "default_user",
+            "required": false,
+            "type": "string"
           }
         ],
         "required": true,
         "schema": {
+          "additionalProperties": false,
+          "oneOf": [
+            {
+              "not": {
+                "required": [
+                  "snapshot_id"
+                ]
+              },
+              "required": [
+                "template_id"
+              ]
+            },
+            {
+              "not": {
+                "required": [
+                  "template_id"
+                ]
+              },
+              "required": [
+                "snapshot_id"
+              ]
+            }
+          ],
           "properties": {
+            "auto_pause": {
+              "default": false,
+              "description": "When `true`, the sandbox is paused instead of deleted when `timeout` expires (see `lifecycle.on_timeout` on the detail endpoint). IDCs that cannot honour this reject the request.",
+              "type": "boolean"
+            },
+            "default_user": {
+              "allOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "OS identity used by data-plane operations that do not specify a user. Only some IDCs support this, and only `{\"username\":\"root\",\"uid\":0}` is accepted. An IDC that does not support it returns 422 `Template.ProviderNotSupported`; any other value returns 400 `Parameter.Invalid`. When omitted, the sandbox keeps its default user.",
+                  "properties": {
+                    "uid": {
+                      "format": "int64",
+                      "maximum": 0,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "username": {
+                      "enum": [
+                        "root"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "username",
+                    "uid"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "description": "OS identity for data-plane operations that do not specify a user. Not supported in every IDC."
+            },
+            "egress": {
+              "allOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "allowed_cidrs": {
+                      "description": "Allowed IPv4 CIDRs.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "allowed_hostnames": {
+                      "description": "Allowed hostnames; a leading `*.` wildcard is supported.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              ],
+              "description": "Initial full allowlist when `egress_control` is true; omitted or empty means deny-all."
+            },
+            "egress_control": {
+              "default": false,
+              "description": "Whether to enable dedicated egress control for this sandbox. `false` means public egress; `true` starts from deny-all and allows only the `egress` allowlist. This switch cannot be changed after creation.",
+              "type": "boolean"
+            },
             "env_vars": {
               "additionalProperties": {
                 "type": "string"
@@ -3454,7 +3575,7 @@
               "type": "object"
             },
             "idc_name": {
-              "description": "Target data center name, e.g. us-central1-c. Optional: when omitted, the organization's configured default data center is used (maintained by the platform administrator); if the organization has no default configured, the request returns 400. Note that Templates are bound to a data center: the effective data center (whether explicit or default) must match the one that owns the Template referenced by `template_id`, otherwise the request is treated as template-not-found.\n",
+              "description": "Target data center name, e.g. us-central1-c. Optional: when omitted, the organization's configured default data center is used (maintained by the platform administrator); if the organization has no default configured, the request returns 400. If the effective data center is under maintenance, the request returns 409 `IDC.UnderMaintenance`. Note that Templates are bound to a data center: the effective data center (whether explicit or default) must match the one that owns the Template or snapshot referenced by the request, otherwise a Template is reported as not found (400 `Parameter.Invalid`); a snapshot that exists but belongs to another data center also returns 400 `Parameter.Invalid` (404 `Resource.NotFound` is returned only when the snapshot does not exist).\n",
               "type": "string"
             },
             "metadata": {
@@ -3464,19 +3585,32 @@
               "description": "Customer-defined key/value pairs; the platform does not interpret them. The list endpoint can filter by them.",
               "type": "object"
             },
+            "product": {
+              "description": "Optional product SKU (see `GET /api/v2/products`, for example `gmi.sandbox.large`). IDCs that do not support selecting a product at create time return 422 `Template.ProviderNotSupported`.",
+              "example": "gmi.sandbox.large",
+              "type": "string"
+            },
+            "secure": {
+              "default": false,
+              "description": "Enables traffic-access-token authentication on the user endpoint.",
+              "type": "boolean"
+            },
+            "snapshot_id": {
+              "description": "Ready durable snapshot identifier. Mutually exclusive with template_id. Compute resources are inherited from the snapshot. A snapshot that does not exist returns 404 `Resource.NotFound`.",
+              "format": "uuid",
+              "type": "string"
+            },
             "template_id": {
-              "description": "Template identifier or name. A snapshot-as-template `snapshotID` is also valid here.",
+              "description": "Template identifier or name. Mutually exclusive with snapshot_id: both or neither returns 400 `Sandbox.SourceConflict`. A template that cannot be found in the effective IDC returns 400 `Parameter.Invalid`.",
               "type": "string"
             },
             "timeout": {
-              "description": "Time-to-live in seconds. When omitted or 0 or less, 300 seconds is used.",
+              "description": "Time-to-live in seconds. When omitted, 300 seconds is used. An explicit value must be at least 1; 0 or a negative value returns 400 `Parameter.Invalid`. At most 86400 (24 hours) in the selected IDC; a larger value returns 400 `Parameter.Invalid`. The limit can differ by IDC.",
               "format": "int64",
+              "minimum": 1,
               "type": "integer"
             }
           },
-          "required": [
-            "template_id"
-          ],
           "type": "object"
         }
       },
@@ -3488,7 +3622,7 @@
     },
     {
       "cookie_parameters": [],
-      "description": "Accepts the deletion",
+      "description": "Deletes the sandbox",
       "group": "Sandbox",
       "header_parameters": [],
       "method": "DELETE",
@@ -3509,6 +3643,84 @@
       "server": "https://console.gmicloud.ai/api/v2",
       "service": "sandbox",
       "summary": "Delete (kill) a sandbox"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Single dispatch endpoint for runtime actions on a running sandbox",
+      "group": "Sandbox",
+      "header_parameters": [],
+      "method": "POST",
+      "name": "execute-sandbox-action",
+      "path": "/sandboxes/{id}/actions",
+      "path_parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query_parameters": [],
+      "request_body": {
+        "content_type": "application/json",
+        "properties": [
+          {
+            "enum": [
+              "update_egress_policy"
+            ],
+            "name": "action",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "params",
+            "required": true,
+            "type": "object"
+          }
+        ],
+        "required": true,
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "update_egress_policy"
+              ],
+              "type": "string"
+            },
+            "params": {
+              "additionalProperties": false,
+              "properties": {
+                "allowed_cidrs": {
+                  "description": "Allowed IPv4 CIDRs.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "allowed_hostnames": {
+                  "description": "Allowed hostnames; a leading `*.` wildcard is supported.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "action",
+            "params"
+          ],
+          "type": "object"
+        }
+      },
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Execute a sandbox runtime action"
     },
     {
       "cookie_parameters": [],
@@ -3536,7 +3748,7 @@
     },
     {
       "cookie_parameters": [],
-      "description": "Returns sandboxes that are still actionable or still worth watching: `provisioning`, `running`, `updating`, `checkpointing`, plus the terminal failure state `failed`",
+      "description": "Returns sandboxes that are still actionable or still worth watching: `provisioning`, `running`, `updating`, `checkpointing`, `pausing`, `paused`, `resuming`, plus the terminal failure state `failed`",
       "group": "Sandbox",
       "header_parameters": [],
       "method": "GET",
@@ -3586,6 +3798,75 @@
     },
     {
       "cookie_parameters": [],
+      "description": "Pauses a running sandbox, preserving its ID, disk, memory, and process state",
+      "group": "Sandbox",
+      "header_parameters": [],
+      "method": "POST",
+      "name": "pause-sandbox",
+      "path": "/sandboxes/{id}/pause",
+      "path_parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query_parameters": [],
+      "request_body": null,
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Pause a sandbox"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Wakes a paused sandbox",
+      "group": "Sandbox",
+      "header_parameters": [],
+      "method": "POST",
+      "name": "resume-sandbox",
+      "path": "/sandboxes/{id}/resume",
+      "path_parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query_parameters": [],
+      "request_body": {
+        "content_type": "application/json",
+        "properties": [
+          {
+            "name": "timeout",
+            "required": false,
+            "type": "integer"
+          }
+        ],
+        "required": false,
+        "schema": {
+          "description": "The whole body may be omitted; omitting it keeps the runtime that was left at the moment of the pause.",
+          "properties": {
+            "timeout": {
+              "description": "Time-to-live after the resume, in seconds. When omitted or 0 or less, the runtime left at the moment of the pause is kept (paused time is not counted). Subject to the account's maximum lifetime cap; exceeding it returns 400.\n",
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Resume a paused sandbox"
+    },
+    {
+      "cookie_parameters": [],
       "description": "Resets the time-to-live relative to the current time",
       "group": "Sandbox",
       "header_parameters": [],
@@ -3614,7 +3895,7 @@
         "schema": {
           "properties": {
             "timeout": {
-              "description": "Time-to-live in seconds, measured from the current time. When omitted or 0 or less, 300 seconds is used.",
+              "description": "Time-to-live in seconds, measured from the current time. When omitted or 0 or less, 300 seconds is used. At most the data center's maximum lifetime (default 86400 seconds); exceeding it returns 400 `Parameter.Invalid`.",
               "format": "int64",
               "type": "integer"
             }
@@ -3718,6 +3999,12 @@
           "name": "X-Request-ID",
           "required": false,
           "type": "string"
+        },
+        {
+          "in": "header",
+          "name": "Idempotency-Key",
+          "required": false,
+          "type": "string"
         }
       ],
       "method": "POST",
@@ -3772,19 +4059,28 @@
               "additionalProperties": false,
               "properties": {
                 "command": {
-                  "description": "Shell command to execute.",
+                  "description": "Shell command to execute. Required and non-empty; at most 128 KiB (counted in bytes) and must not contain NUL. A violation returns 400 `Execution.InvalidRequest`.",
+                  "minLength": 1,
                   "type": "string"
                 },
                 "cwd": {
-                  "description": "Absolute working directory. Defaults to `/home/user`.",
+                  "description": "Working directory the command runs in (relative paths in the command resolve against it). It must be absolute and normalized: no `.`, `..` or empty segments (a trailing `/` is normalized away); otherwise 400 `Execution.InvalidRequest`. When omitted, defaults to the template's working directory (the image or Dockerfile WORKDIR; depends on the template and IDC, for example `/` or `/home/user`; pass `cwd` explicitly when it matters). If the directory does not exist the execution ends with status `failed` and `failure_reason` `cwd_not_found`. If the path exists but is not a directory the execution ends with `failed` and `failure_reason` `cwd_not_directory`.",
                   "type": "string"
                 },
                 "envs": {
                   "additionalProperties": {
                     "type": "string"
                   },
-                  "description": "Environment variables for the command.",
+                  "description": "Environment variables for the command. Names must be valid environment variable names (letters, digits and underscore, not starting with a digit) of at most 128 bytes, and each value is at most 64 KiB; otherwise the request returns 400 `Execution.InvalidRequest`.",
                   "type": "object"
+                },
+                "execution_timeout_seconds": {
+                  "default": 300,
+                  "description": "Time limit for this command, in seconds. When the limit is reached the command is terminated (SIGTERM, then SIGKILL after a grace period) and the execution ends with status `timed_out` and a null `exit_code`. A value outside 1..3600 returns 400. This is unrelated to `wait_timeout_seconds`, which only bounds how long the request waits for a result. A command stopped this way reports `termination_reason` `execution_timeout`.",
+                  "format": "int32",
+                  "maximum": 3600,
+                  "minimum": 1,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3929,6 +4225,369 @@
     },
     {
       "cookie_parameters": [],
+      "description": "WebSocket handshake — **not a normal GET**",
+      "group": "Sandbox-Shell",
+      "header_parameters": [],
+      "method": "GET",
+      "name": "attach-sandbox-shell",
+      "path": "/shell/connect",
+      "path_parameters": [],
+      "query_parameters": [],
+      "request_body": null,
+      "returns_binary": false,
+      "security_scheme": "sandboxAccessToken",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Attach to the sandbox shell (WebSocket)"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Out-of-band control channel for the shell",
+      "group": "Sandbox-Shell",
+      "header_parameters": [
+        {
+          "in": "header",
+          "name": "X-Request-ID",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "method": "POST",
+      "name": "control-sandbox-shell",
+      "path": "/shell/control",
+      "path_parameters": [],
+      "query_parameters": [],
+      "request_body": {
+        "content_type": "application/json",
+        "properties": [
+          {
+            "enum": [
+              "resize",
+              "close"
+            ],
+            "name": "action",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "cols",
+            "required": false,
+            "type": "integer"
+          },
+          {
+            "name": "rows",
+            "required": false,
+            "type": "integer"
+          }
+        ],
+        "required": true,
+        "schema": {
+          "additionalProperties": false,
+          "description": "Exactly one control command:\n- `action=resize` requires `cols` and `rows` (each 1..1000) and an\n  active WebSocket attach.\n- `action=close` takes no other fields and does not require an active\n  connection.\nUnknown `action` values or extra fields are rejected with\n`400 Shell.InvalidRequest`.\n",
+          "properties": {
+            "action": {
+              "description": "`resize` applies a new terminal size to the live PTY; `close`\nirrevocably terminates the shell (PTY killed, state deleted, any\nexisting WebSocket severed within about one second).\n",
+              "enum": [
+                "resize",
+                "close"
+              ],
+              "type": "string"
+            },
+            "cols": {
+              "description": "Terminal width in columns. Required when `action=resize`; must be omitted for `close`.",
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "rows": {
+              "description": "Terminal height in rows. Required when `action=resize`; must be omitted for `close`.",
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        }
+      },
+      "returns_binary": false,
+      "security_scheme": "sandboxAccessToken",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Control the sandbox shell (resize / close)"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Ensures the sandbox's single logical shell (PTY) session exists",
+      "group": "Sandbox-Shell",
+      "header_parameters": [
+        {
+          "in": "header",
+          "name": "X-Request-ID",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "method": "POST",
+      "name": "launch-sandbox-shell",
+      "path": "/shell",
+      "path_parameters": [],
+      "query_parameters": [],
+      "request_body": {
+        "content_type": "application/json",
+        "properties": [],
+        "required": false,
+        "schema": {
+          "additionalProperties": false,
+          "description": "Empty object. Any unknown field is rejected with `400 Shell.InvalidRequest`.\n",
+          "type": "object"
+        }
+      },
+      "returns_binary": false,
+      "security_scheme": "sandboxAccessToken",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Launch the sandbox interactive shell"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Creates a durable snapshot from a running sandbox in the current tenant",
+      "group": "SandboxSnapshot",
+      "header_parameters": [
+        {
+          "in": "header",
+          "name": "Idempotency-Key",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "method": "POST",
+      "name": "create-sandbox-snapshot",
+      "path": "/snapshots",
+      "path_parameters": [],
+      "query_parameters": [],
+      "request_body": {
+        "content_type": "application/json",
+        "properties": [
+          {
+            "name": "sandbox_id",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "metadata",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "required": true,
+        "schema": {
+          "properties": {
+            "metadata": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "name": {
+              "description": "Customer-defined name. Leading and trailing whitespace is removed;\nwhitespace-only names become empty.\nNon-empty names are unique within the organization across all IDCs;\nconflicts return 409 Resource.AlreadyExists. Creation failure clears the name.\n",
+              "maxLength": 255,
+              "type": "string"
+            },
+            "sandbox_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "sandbox_id"
+          ],
+          "type": "object"
+        }
+      },
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Create a durable snapshot"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Accepts asynchronous deletion and returns 202 with `status: deleting`",
+      "group": "SandboxSnapshot",
+      "header_parameters": [],
+      "method": "DELETE",
+      "name": "delete-sandbox-snapshot",
+      "path": "/snapshots/{snapshot_id}",
+      "path_parameters": [
+        {
+          "in": "path",
+          "name": "snapshot_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query_parameters": [],
+      "request_body": null,
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Delete a durable snapshot"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Returns a snapshot in the current tenant",
+      "group": "SandboxSnapshot",
+      "header_parameters": [],
+      "method": "GET",
+      "name": "get-sandbox-snapshot",
+      "path": "/snapshots/{snapshot_id}",
+      "path_parameters": [
+        {
+          "in": "path",
+          "name": "snapshot_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query_parameters": [],
+      "request_body": null,
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Get a durable snapshot"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Lists snapshots in the current tenant, including `deleting` and `delete_failed`",
+      "group": "SandboxSnapshot",
+      "header_parameters": [],
+      "method": "GET",
+      "name": "list-sandbox-snapshots",
+      "path": "/snapshots",
+      "path_parameters": [],
+      "query_parameters": [
+        {
+          "in": "query",
+          "name": "idc_name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "source_sandbox_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "enum": [
+            "creating",
+            "ready",
+            "error",
+            "deleting",
+            "delete_failed"
+          ],
+          "in": "query",
+          "name": "status",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "default": 1,
+          "in": "query",
+          "name": "page",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "default": 20,
+          "in": "query",
+          "name": "page_size",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "request_body": null,
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "List durable snapshots"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Updates the customer-defined name and/or metadata",
+      "group": "SandboxSnapshot",
+      "header_parameters": [],
+      "method": "PATCH",
+      "name": "update-sandbox-snapshot",
+      "path": "/snapshots/{snapshot_id}",
+      "path_parameters": [
+        {
+          "in": "path",
+          "name": "snapshot_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query_parameters": [],
+      "request_body": {
+        "content_type": "application/json",
+        "properties": [
+          {
+            "name": "name",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "metadata",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "required": true,
+        "schema": {
+          "description": "Omitted fields remain unchanged. Metadata replaces the entire map.",
+          "properties": {
+            "metadata": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Customer-defined key/value pairs. Use an empty object to clear them.",
+              "type": "object"
+            },
+            "name": {
+              "description": "Customer-defined name. Leading and trailing whitespace is removed;\nwhitespace-only names become empty.\nNon-empty names are unique within the organization across all IDCs;\nconflicts return 409 Resource.AlreadyExists. Creation failure clears the name. Use an empty string to clear it.\n",
+              "maxLength": 255,
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Update a durable snapshot"
+    },
+    {
+      "cookie_parameters": [],
       "description": "Creates a logical Template together with its initial Build",
       "group": "SandboxTemplate",
       "header_parameters": [
@@ -3986,9 +4645,16 @@
               "allOf": [
                 {
                   "additionalProperties": false,
+                  "description": "Initial Build definition used only by the combined Template-create\nflow. A file context cannot be attached until the Template has a stable\nID; use the split create/upload/start flow when files are required.\n",
                   "properties": {
+                    "build_timeout_sec": {
+                      "description": "Wall-clock budget for this Build in seconds. Omit or null to use the\nplatform default (600). Allowed range: 60–3600. On expiry the Build\nis finalized as `error` with failure code `TemplateBuild.TimedOut`,\nits backing build in the selected IDC is cancelled, and its partial\nartifacts are reclaimed, best-effort.\n",
+                      "maximum": 3600,
+                      "minimum": 60,
+                      "type": "integer"
+                    },
                     "commands": {
-                      "description": "Shell command strings executed sequentially during the Build.",
+                      "description": "Shell command strings executed sequentially during the Build. They may\nrun as a non-root account with passwordless sudo: prefix privileged\ncommands with `sudo`, and set ownership of files that the runtime\naccount must use. To control the build identity explicitly, use a\nDockerfile source with `USER` instructions, as in a regular Dockerfile.\n",
                       "items": {
                         "maxLength": 8192,
                         "minLength": 1,
@@ -3997,12 +4663,37 @@
                       "maxItems": 100,
                       "type": "array"
                     },
+                    "default_user": {
+                      "additionalProperties": false,
+                      "description": "Runtime default identity for Sandboxes launched from this Build.\nWithout it, Sandboxes run as `docker run` would: as the Dockerfile's final\nUSER, else the image's USER, else root, in the final WORKDIR, else the\nimage's, else `/`.\nSandboxes run commands as a named account: an image USER given as a\nnumeric uid (or uid:gid) needs a matching /etc/passwd entry in the image,\notherwise the Build fails with a reason that names the USER. The group\npart is ignored.\nIt is applied after all build commands and overrides the final Dockerfile\nUSER at runtime; it does not change the identity of earlier build commands.\n\nRecommended setup for a custom account: create it in the Dockerfile, give\nit a working directory it can access, and pass its uid, for example\n`RUN useradd --uid 9999 --create-home --shell /bin/bash app`,\n`WORKDIR /home/app`, and `default_user: {username: app, uid: 9999}`.\n\n- default_user changes the identity only, not the working directory or its\n  permissions. If the account cannot enter the final working directory,\n  commands cannot start there and the Build may fail; declare an\n  accessible WORKDIR to fix it.\n- With uid, the account must already exist with that UID and an existing\n  home directory; otherwise the Build fails. The platform does not change\n  UID, ownership, groups, or sudo privileges.\n- A non-root username without uid may be rejected with HTTP 422\n  (Template.ProviderNotSupported); supply uid to avoid this. root may omit uid.\n- Invalid username, out-of-range uid, or root with a nonzero uid returns\n  HTTP 400 (Parameter.Invalid).\n- A Build from a base template keeps the base template's user and working\n  directory, as Docker FROM does; set default_user on the child Build to\n  select another. Changing it requires a new Build.\n\nWhen omitted, the template's default runtime identity is used. A Build\nresponse reports the requested setting; an omitted uid stays omitted.\n",
+                      "properties": {
+                        "uid": {
+                          "description": "UID of the account. Recommended for non-root usernames. root only accepts 0.",
+                          "example": 9999,
+                          "format": "int32",
+                          "maximum": 2147483647,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "username": {
+                          "example": "app",
+                          "maxLength": 32,
+                          "minLength": 1,
+                          "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "username"
+                      ],
+                      "type": "object"
+                    },
                     "envs": {
                       "additionalProperties": {
                         "maxLength": 32768,
                         "type": "string"
                       },
-                      "description": "Environment variables available only during the Template Build.\nThey are visible to subsequent build commands/steps and are not persisted\ninto the resulting template artifact as sandbox runtime environment\nvariables. Pass runtime env when creating a Sandbox instead. Write-only:\nvalues are never returned on Template or TemplateBuild responses.\nKeys must be unique (JSON object); the server orders them\ndeterministically by key. Key names must match\n`[A-Za-z_][A-Za-z0-9_]*`.\n",
+                      "description": "Build-only environment variables; values are write-only.",
                       "maxProperties": 256,
                       "type": "object"
                     },
@@ -4010,6 +4701,7 @@
                       "description": "Manual Build source. Sandbox sources use the snapshot endpoint.",
                       "discriminator": {
                         "mapping": {
+                          "dockerfile": "#/components/schemas/DockerfileSource",
                           "image": "#/components/schemas/ImageSource",
                           "template": "#/components/schemas/TemplateSource"
                         },
@@ -4020,9 +4712,34 @@
                           "additionalProperties": false,
                           "properties": {
                             "image": {
-                              "description": "Debian or Ubuntu container image reference. The server validates\nthe image against the IDC-supported base OS policy.\n",
+                              "description": "OCI container image reference. The following distributions have\nbeen validated: Debian/Ubuntu, Fedora/CentOS Stream/Rocky Linux/\nAlmaLinux, Arch Linux, and Alpine Linux.\n",
                               "minLength": 1,
                               "type": "string"
+                            },
+                            "registry_credential": {
+                              "additionalProperties": false,
+                              "description": "A one-time registry credential used to pull the private image named by `image`. `username` and `password` are used only for this build request: they are never persisted and never returned in any response. The Build detail's `registry_authentication` reports only whether a credential was used and of what kind, never the username or password.",
+                              "properties": {
+                                "password": {
+                                  "description": "Can be a password or an access token.",
+                                  "type": "string"
+                                },
+                                "type": {
+                                  "enum": [
+                                    "general"
+                                  ],
+                                  "type": "string"
+                                },
+                                "username": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "username",
+                                "password"
+                              ],
+                              "type": "object"
                             },
                             "type": {
                               "enum": [
@@ -4045,7 +4762,7 @@
                               "type": "string"
                             },
                             "template_id": {
-                              "description": "Parent Template identifier in the same IDC.",
+                              "description": "Parent GMI Template identifier in the same IDC.",
                               "type": "string"
                             },
                             "type": {
@@ -4060,11 +4777,33 @@
                             "template_id"
                           ],
                           "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "dockerfile": {
+                              "description": "Raw Dockerfile text. Supported instructions: FROM (exactly one; no\nmulti-stage), RUN, ENV, WORKDIR, USER, COPY/ADD, CMD/ENTRYPOINT;\nEXPOSE and VOLUME are skipped; anything else is rejected with 400.\n\nA trailing backslash continues an instruction on the next line; blank\nand comment lines inside a continuation are skipped.\n\nThe Dockerfile's final USER is the runtime identity of Sandboxes unless\n`default_user` is set. A Build fails when that account cannot enter the\nfinal working directory; declare an accessible WORKDIR.\n\nCOPY/ADD sources must reference an uploaded Template file as\n`COPY {{file:<file_id>}} /dest` — local paths and URLs are\nrejected, and at most one file may be referenced per build (its\n`file_id` must also be attached via `file_context`, with\n`file_context.destination` omitted).\n\nWith a dockerfile source, the sibling `commands` and `envs` fields\nare forbidden: write RUN/ENV lines in the Dockerfile instead.\nCMD/ENTRYPOINT are extracted into the Build's start command; an\nexplicit `start_cmd` takes precedence over them.\n\nENV values are visible to subsequent build steps and are part of\nthe sandbox runtime environment, as under `docker run`; a value\npassed as `env_vars` when creating a Sandbox overrides one of the\nsame name. Do not put build-time secrets in ENV: build the Template\nfrom an image or template source and pass them in `envs`, which\nreach the build steps only.\n",
+                              "maxLength": 262144,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "type": {
+                              "enum": [
+                                "dockerfile"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "dockerfile"
+                          ],
+                          "type": "object"
                         }
                       ]
                     },
                     "start_cmd": {
-                      "description": "Launch command persisted with the Build and applied when Sandboxes\ncreated from this Template start.\n",
+                      "description": "Launch command applied when Sandboxes from this Template start.",
                       "maxLength": 8192,
                       "minLength": 1,
                       "type": "string"
@@ -4076,7 +4815,7 @@
                   "type": "object"
                 }
               ],
-              "description": "Initial Build definition created and started with the Template\n(combined flow, every IDC supports it). Omitting `build` selects the\nsplit flow: the Template and a `waiting` initial Build are created\nwithout starting anything, and the Build is started later via\n`POST /templates/{template_id}/builds/{id}`. The split flow is not\nsupported in every IDC; unsupported IDCs reject it with 422.\n"
+              "description": "Initial Build definition created and started with the Template\n(combined flow, every IDC supports it). A `file_context` cannot be\nattached here; use the split flow when files are required. Omitting\n`build` selects the split flow: the Template and a `waiting`\ninitial Build are created without starting anything, and the Build\nis started later via `POST /templates/{template_id}/builds/{id}`.\nThe split flow is not supported in every IDC; unsupported IDCs\nreject it with 422.\n"
             },
             "description": {
               "description": "Human-readable Template description.",
@@ -4084,7 +4823,7 @@
               "type": "string"
             },
             "idc_name": {
-              "description": "IDC that permanently owns the Template. Optional: omitted, empty, and whitespace-only values are equivalent — the organization's configured default data center is used (maintained by the platform administrator; the same setting used by sandbox creation). If the organization has no default configured, the request returns 400.\n",
+              "description": "IDC that permanently owns the Template. Optional: omitted, empty, and whitespace-only values are equivalent — the organization's configured default data center is used (maintained by the platform administrator; the same setting used by sandbox creation). If the organization has no default configured, the request returns 400. If the effective data center is under maintenance, the request returns 409 `IDC.UnderMaintenance`.\n",
               "type": "string"
             },
             "labels": {
@@ -4104,15 +4843,7 @@
               "type": "string"
             },
             "resources": {
-              "description": "Resource values may be selected by catalog product SKU or supplied as a\ncustom configuration. Active presets use operator-managed IDC product\nvalues without custom-resource limit validation. Only custom values\nmust pass the 16 vCPU / 64 GiB memory / 64 GiB boot disk limits and the\nselected IDC's representability checks.\n",
-              "discriminator": {
-                "mapping": {
-                  "custom": "#/components/schemas/CustomResourceSelection",
-                  "preset": "#/components/schemas/PresetResourceSelection"
-                },
-                "propertyName": "type"
-              },
-              "oneOf": [
+              "allOf": [
                 {
                   "additionalProperties": false,
                   "properties": {
@@ -4132,53 +4863,9 @@
                     "product"
                   ],
                   "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "architecture": {
-                      "default": "x86_64",
-                      "description": "Requested CPU architecture. If omitted, x86_64 is used. The\nselected IDC must support the value.\n",
-                      "enum": [
-                        "x86_64",
-                        "arm64"
-                      ],
-                      "type": "string"
-                    },
-                    "cpu_count": {
-                      "description": "Requested integer vCPU count. Custom resources allow at most\n16 vCPU.\n",
-                      "maximum": 16,
-                      "minimum": 1,
-                      "type": "integer"
-                    },
-                    "disk_size_mb": {
-                      "description": "Requested integer boot disk size in MiB. Custom resources allow at\nmost 65536 MiB (64 GiB).\n",
-                      "maximum": 65536,
-                      "minimum": 1,
-                      "type": "integer"
-                    },
-                    "memory_mb": {
-                      "description": "Requested integer memory size in MiB. Custom resources allow at\nmost 65536 MiB (64 GiB).\n",
-                      "maximum": 65536,
-                      "minimum": 1,
-                      "type": "integer"
-                    },
-                    "type": {
-                      "enum": [
-                        "custom"
-                      ],
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "cpu_count",
-                    "memory_mb",
-                    "disk_size_mb"
-                  ],
-                  "type": "object"
                 }
-              ]
+              ],
+              "description": "Resource values are selected by catalog product SKU\n(`GET /api/v2/products`); the service resolves the active entry from\nthe product catalog.\n"
             }
           },
           "required": [
@@ -4196,7 +4883,370 @@
     },
     {
       "cookie_parameters": [],
-      "description": "Soft-deletes the Template so it disappears from tenant-visible lists",
+      "description": "Creates a new Build from the given definition and starts it immediately",
+      "group": "SandboxTemplate",
+      "header_parameters": [],
+      "method": "POST",
+      "name": "create-template-build",
+      "path": "/templates/{template_id}/builds",
+      "path_parameters": [
+        {
+          "in": "path",
+          "name": "template_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query_parameters": [
+        {
+          "in": "query",
+          "name": "idc_name",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "request_body": {
+        "content_type": "application/json",
+        "properties": [
+          {
+            "name": "default_user",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "name": "source",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "commands",
+            "required": false,
+            "type": "array"
+          },
+          {
+            "name": "envs",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "name": "build_timeout_sec",
+            "required": false,
+            "type": "integer"
+          },
+          {
+            "name": "start_cmd",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "file_context",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "required": true,
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "build_timeout_sec": {
+              "description": "Wall-clock budget for this Build in seconds. Omit or null to use the\nplatform default (600). Allowed range: 60–3600. On expiry the Build\nis finalized as `error` with failure code `TemplateBuild.TimedOut`,\nits backing build in the selected IDC is cancelled, and its partial\nartifacts are reclaimed, best-effort.\n",
+              "maximum": 3600,
+              "minimum": 60,
+              "type": "integer"
+            },
+            "commands": {
+              "description": "Shell command strings executed sequentially during the Build. They may\nrun as a non-root account with passwordless sudo: prefix privileged\ncommands with `sudo`, and set ownership of files that the runtime\naccount must use. To control the build identity explicitly, use a\nDockerfile source with `USER` instructions, as in a regular Dockerfile.\n",
+              "items": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            },
+            "default_user": {
+              "additionalProperties": false,
+              "description": "Runtime default identity for Sandboxes launched from this Build.\nWithout it, Sandboxes run as `docker run` would: as the Dockerfile's final\nUSER, else the image's USER, else root, in the final WORKDIR, else the\nimage's, else `/`.\nSandboxes run commands as a named account: an image USER given as a\nnumeric uid (or uid:gid) needs a matching /etc/passwd entry in the image,\notherwise the Build fails with a reason that names the USER. The group\npart is ignored.\nIt is applied after all build commands and overrides the final Dockerfile\nUSER at runtime; it does not change the identity of earlier build commands.\n\nRecommended setup for a custom account: create it in the Dockerfile, give\nit a working directory it can access, and pass its uid, for example\n`RUN useradd --uid 9999 --create-home --shell /bin/bash app`,\n`WORKDIR /home/app`, and `default_user: {username: app, uid: 9999}`.\n\n- default_user changes the identity only, not the working directory or its\n  permissions. If the account cannot enter the final working directory,\n  commands cannot start there and the Build may fail; declare an\n  accessible WORKDIR to fix it.\n- With uid, the account must already exist with that UID and an existing\n  home directory; otherwise the Build fails. The platform does not change\n  UID, ownership, groups, or sudo privileges.\n- A non-root username without uid may be rejected with HTTP 422\n  (Template.ProviderNotSupported); supply uid to avoid this. root may omit uid.\n- Invalid username, out-of-range uid, or root with a nonzero uid returns\n  HTTP 400 (Parameter.Invalid).\n- A Build from a base template keeps the base template's user and working\n  directory, as Docker FROM does; set default_user on the child Build to\n  select another. Changing it requires a new Build.\n\nWhen omitted, the template's default runtime identity is used. A Build\nresponse reports the requested setting; an omitted uid stays omitted.\n",
+              "properties": {
+                "uid": {
+                  "description": "UID of the account. Recommended for non-root usernames. root only accepts 0.",
+                  "example": 9999,
+                  "format": "int32",
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "username": {
+                  "example": "app",
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "username"
+              ],
+              "type": "object"
+            },
+            "envs": {
+              "additionalProperties": {
+                "maxLength": 32768,
+                "type": "string"
+              },
+              "description": "Environment variables available only during the Template Build.\nThey are visible to subsequent build commands/steps and are not persisted\ninto the resulting template artifact as sandbox runtime environment\nvariables. Pass runtime env when creating a Sandbox instead. Write-only:\nvalues are never returned on Template or TemplateBuild responses.\nKeys must be unique (JSON object); the server orders them\ndeterministically by key. Key names must match\n`[A-Za-z_][A-Za-z0-9_]*`.\n",
+              "maxProperties": 256,
+              "type": "object"
+            },
+            "file_context": {
+              "additionalProperties": false,
+              "properties": {
+                "destination": {
+                  "description": "Absolute destination copied from the archive root during the Build.\nRequired for image/template sources; forbidden for a dockerfile\nsource, whose `COPY {{file:...}} /dest` lines carry their own\ndestinations.\n",
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "pattern": "^/",
+                  "type": "string"
+                },
+                "file_id": {
+                  "description": "GMI file identifier returned by the upload initialization endpoint.",
+                  "format": "uuid",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file_id"
+              ],
+              "type": "object"
+            },
+            "source": {
+              "description": "Manual Build source. Sandbox sources use the snapshot endpoint.",
+              "discriminator": {
+                "mapping": {
+                  "dockerfile": "#/components/schemas/DockerfileSource",
+                  "image": "#/components/schemas/ImageSource",
+                  "template": "#/components/schemas/TemplateSource"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "image": {
+                      "description": "OCI container image reference. The following distributions have\nbeen validated: Debian/Ubuntu, Fedora/CentOS Stream/Rocky Linux/\nAlmaLinux, Arch Linux, and Alpine Linux.\n",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "registry_credential": {
+                      "additionalProperties": false,
+                      "description": "A one-time registry credential used to pull the private image named by `image`. `username` and `password` are used only for this build request: they are never persisted and never returned in any response. The Build detail's `registry_authentication` reports only whether a credential was used and of what kind, never the username or password.",
+                      "properties": {
+                        "password": {
+                          "description": "Can be a password or an access token.",
+                          "type": "string"
+                        },
+                        "type": {
+                          "enum": [
+                            "general"
+                          ],
+                          "type": "string"
+                        },
+                        "username": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "username",
+                        "password"
+                      ],
+                      "type": "object"
+                    },
+                    "type": {
+                      "enum": [
+                        "image"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "image"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "build_id": {
+                      "description": "Optional parent Build identifier. When omitted, the parent's\ncurrent successful Build is used.\n",
+                      "type": "string"
+                    },
+                    "template_id": {
+                      "description": "Parent GMI Template identifier in the same IDC.",
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "template"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "template_id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "dockerfile": {
+                      "description": "Raw Dockerfile text. Supported instructions: FROM (exactly one; no\nmulti-stage), RUN, ENV, WORKDIR, USER, COPY/ADD, CMD/ENTRYPOINT;\nEXPOSE and VOLUME are skipped; anything else is rejected with 400.\n\nA trailing backslash continues an instruction on the next line; blank\nand comment lines inside a continuation are skipped.\n\nThe Dockerfile's final USER is the runtime identity of Sandboxes unless\n`default_user` is set. A Build fails when that account cannot enter the\nfinal working directory; declare an accessible WORKDIR.\n\nCOPY/ADD sources must reference an uploaded Template file as\n`COPY {{file:<file_id>}} /dest` — local paths and URLs are\nrejected, and at most one file may be referenced per build (its\n`file_id` must also be attached via `file_context`, with\n`file_context.destination` omitted).\n\nWith a dockerfile source, the sibling `commands` and `envs` fields\nare forbidden: write RUN/ENV lines in the Dockerfile instead.\nCMD/ENTRYPOINT are extracted into the Build's start command; an\nexplicit `start_cmd` takes precedence over them.\n\nENV values are visible to subsequent build steps and are part of\nthe sandbox runtime environment, as under `docker run`; a value\npassed as `env_vars` when creating a Sandbox overrides one of the\nsame name. Do not put build-time secrets in ENV: build the Template\nfrom an image or template source and pass them in `envs`, which\nreach the build steps only.\n",
+                      "maxLength": 262144,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "dockerfile"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "dockerfile"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "start_cmd": {
+              "description": "Launch command persisted with the Build and applied when Sandboxes\ncreated from this Template start.\n\nIt runs as a boot script before the sandbox's main process, and the\nsandbox only becomes ready once it returns, so the command must\nterminate. A foreground long-running command (`sleep infinity`, a\nserver started in the foreground) leaves the Sandbox stuck\ninitializing and every exec against it rejected.\n\nAppending `&` alone is not sufficient: a backgrounded process that\nstill holds the inherited stdout/stderr keeps boot blocked just the\nsame. Long-running processes must be backgrounded *and* detached\nfrom those streams, e.g.\n`my-server > /var/log/my-server.log 2>&1 &`.\n\nResume continues the saved processes without re-running this command.\n",
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "type": "object"
+        }
+      },
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Create and start a rebuild"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Creates an immutable tar/tgz build context and returns a staging upload\nsession",
+      "group": "SandboxTemplate",
+      "header_parameters": [
+        {
+          "in": "header",
+          "name": "Idempotency-Key",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "method": "POST",
+      "name": "create-template-file",
+      "path": "/templates/{template_id}/files",
+      "path_parameters": [
+        {
+          "in": "path",
+          "name": "template_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query_parameters": [
+        {
+          "in": "query",
+          "name": "idc_name",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "request_body": {
+        "content_type": "application/json",
+        "properties": [
+          {
+            "name": "name",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "enum": [
+              "tar",
+              "tgz"
+            ],
+            "name": "content_type",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "sha256",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "size_bytes",
+            "required": true,
+            "type": "integer"
+          }
+        ],
+        "required": true,
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "content_type": {
+              "enum": [
+                "tar",
+                "tgz"
+              ],
+              "type": "string"
+            },
+            "name": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            },
+            "sha256": {
+              "pattern": "^[0-9a-fA-F]{64}$",
+              "type": "string"
+            },
+            "size_bytes": {
+              "format": "int64",
+              "maximum": 1073741824,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "name",
+            "content_type",
+            "sha256",
+            "size_bytes"
+          ],
+          "type": "object"
+        }
+      },
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Initialize a Template build-context upload"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Accepts deletion and returns 202 with status=deleting",
       "group": "SandboxTemplate",
       "header_parameters": [],
       "method": "DELETE",
@@ -4288,7 +5338,7 @@
     },
     {
       "cookie_parameters": [],
-      "description": "Returns live logs for a Template Build",
+      "description": "Returns live logs for a Template Build; the platform does not persist them",
       "group": "SandboxTemplate",
       "header_parameters": [],
       "method": "GET",
@@ -4342,6 +5392,43 @@
       "server": "https://console.gmicloud.ai/api/v2",
       "service": "sandbox",
       "summary": "Get live Template Build logs"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Returns the platform-owned lifecycle state of the uploaded build\ncontext",
+      "group": "SandboxTemplate",
+      "header_parameters": [],
+      "method": "GET",
+      "name": "get-template-file",
+      "path": "/templates/{template_id}/files/{file_id}",
+      "path_parameters": [
+        {
+          "in": "path",
+          "name": "template_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "file_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query_parameters": [
+        {
+          "in": "query",
+          "name": "idc_name",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "request_body": null,
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Get Template build-context status"
     },
     {
       "cookie_parameters": [],
@@ -4440,6 +5527,12 @@
           "type": "string"
         },
         {
+          "in": "query",
+          "name": "name",
+          "required": false,
+          "type": "string"
+        },
+        {
           "default": 1,
           "in": "query",
           "name": "page",
@@ -4460,6 +5553,274 @@
       "server": "https://console.gmicloud.ai/api/v2",
       "service": "sandbox",
       "summary": "List Templates"
+    },
+    {
+      "cookie_parameters": [],
+      "description": "Starts a Build created by the split create flow (a `waiting` initial\nBuild)",
+      "group": "SandboxTemplate",
+      "header_parameters": [],
+      "method": "POST",
+      "name": "start-template-build",
+      "path": "/templates/{template_id}/builds/{id}",
+      "path_parameters": [
+        {
+          "in": "path",
+          "name": "template_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query_parameters": [
+        {
+          "in": "query",
+          "name": "idc_name",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "request_body": {
+        "content_type": "application/json",
+        "properties": [
+          {
+            "name": "default_user",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "name": "source",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "commands",
+            "required": false,
+            "type": "array"
+          },
+          {
+            "name": "envs",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "name": "build_timeout_sec",
+            "required": false,
+            "type": "integer"
+          },
+          {
+            "name": "start_cmd",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "file_context",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "required": true,
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "build_timeout_sec": {
+              "description": "Wall-clock budget for this Build in seconds. Omit or null to use the\nplatform default (600). Allowed range: 60–3600. On expiry the Build\nis finalized as `error` with failure code `TemplateBuild.TimedOut`,\nits backing build in the selected IDC is cancelled, and its partial\nartifacts are reclaimed, best-effort.\n",
+              "maximum": 3600,
+              "minimum": 60,
+              "type": "integer"
+            },
+            "commands": {
+              "description": "Shell command strings executed sequentially during the Build. They may\nrun as a non-root account with passwordless sudo: prefix privileged\ncommands with `sudo`, and set ownership of files that the runtime\naccount must use. To control the build identity explicitly, use a\nDockerfile source with `USER` instructions, as in a regular Dockerfile.\n",
+              "items": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            },
+            "default_user": {
+              "additionalProperties": false,
+              "description": "Runtime default identity for Sandboxes launched from this Build.\nWithout it, Sandboxes run as `docker run` would: as the Dockerfile's final\nUSER, else the image's USER, else root, in the final WORKDIR, else the\nimage's, else `/`.\nSandboxes run commands as a named account: an image USER given as a\nnumeric uid (or uid:gid) needs a matching /etc/passwd entry in the image,\notherwise the Build fails with a reason that names the USER. The group\npart is ignored.\nIt is applied after all build commands and overrides the final Dockerfile\nUSER at runtime; it does not change the identity of earlier build commands.\n\nRecommended setup for a custom account: create it in the Dockerfile, give\nit a working directory it can access, and pass its uid, for example\n`RUN useradd --uid 9999 --create-home --shell /bin/bash app`,\n`WORKDIR /home/app`, and `default_user: {username: app, uid: 9999}`.\n\n- default_user changes the identity only, not the working directory or its\n  permissions. If the account cannot enter the final working directory,\n  commands cannot start there and the Build may fail; declare an\n  accessible WORKDIR to fix it.\n- With uid, the account must already exist with that UID and an existing\n  home directory; otherwise the Build fails. The platform does not change\n  UID, ownership, groups, or sudo privileges.\n- A non-root username without uid may be rejected with HTTP 422\n  (Template.ProviderNotSupported); supply uid to avoid this. root may omit uid.\n- Invalid username, out-of-range uid, or root with a nonzero uid returns\n  HTTP 400 (Parameter.Invalid).\n- A Build from a base template keeps the base template's user and working\n  directory, as Docker FROM does; set default_user on the child Build to\n  select another. Changing it requires a new Build.\n\nWhen omitted, the template's default runtime identity is used. A Build\nresponse reports the requested setting; an omitted uid stays omitted.\n",
+              "properties": {
+                "uid": {
+                  "description": "UID of the account. Recommended for non-root usernames. root only accepts 0.",
+                  "example": 9999,
+                  "format": "int32",
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "username": {
+                  "example": "app",
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "username"
+              ],
+              "type": "object"
+            },
+            "envs": {
+              "additionalProperties": {
+                "maxLength": 32768,
+                "type": "string"
+              },
+              "description": "Environment variables available only during the Template Build.\nThey are visible to subsequent build commands/steps and are not persisted\ninto the resulting template artifact as sandbox runtime environment\nvariables. Pass runtime env when creating a Sandbox instead. Write-only:\nvalues are never returned on Template or TemplateBuild responses.\nKeys must be unique (JSON object); the server orders them\ndeterministically by key. Key names must match\n`[A-Za-z_][A-Za-z0-9_]*`.\n",
+              "maxProperties": 256,
+              "type": "object"
+            },
+            "file_context": {
+              "additionalProperties": false,
+              "properties": {
+                "destination": {
+                  "description": "Absolute destination copied from the archive root during the Build.\nRequired for image/template sources; forbidden for a dockerfile\nsource, whose `COPY {{file:...}} /dest` lines carry their own\ndestinations.\n",
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "pattern": "^/",
+                  "type": "string"
+                },
+                "file_id": {
+                  "description": "GMI file identifier returned by the upload initialization endpoint.",
+                  "format": "uuid",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file_id"
+              ],
+              "type": "object"
+            },
+            "source": {
+              "description": "Manual Build source. Sandbox sources use the snapshot endpoint.",
+              "discriminator": {
+                "mapping": {
+                  "dockerfile": "#/components/schemas/DockerfileSource",
+                  "image": "#/components/schemas/ImageSource",
+                  "template": "#/components/schemas/TemplateSource"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "image": {
+                      "description": "OCI container image reference. The following distributions have\nbeen validated: Debian/Ubuntu, Fedora/CentOS Stream/Rocky Linux/\nAlmaLinux, Arch Linux, and Alpine Linux.\n",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "registry_credential": {
+                      "additionalProperties": false,
+                      "description": "A one-time registry credential used to pull the private image named by `image`. `username` and `password` are used only for this build request: they are never persisted and never returned in any response. The Build detail's `registry_authentication` reports only whether a credential was used and of what kind, never the username or password.",
+                      "properties": {
+                        "password": {
+                          "description": "Can be a password or an access token.",
+                          "type": "string"
+                        },
+                        "type": {
+                          "enum": [
+                            "general"
+                          ],
+                          "type": "string"
+                        },
+                        "username": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "username",
+                        "password"
+                      ],
+                      "type": "object"
+                    },
+                    "type": {
+                      "enum": [
+                        "image"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "image"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "build_id": {
+                      "description": "Optional parent Build identifier. When omitted, the parent's\ncurrent successful Build is used.\n",
+                      "type": "string"
+                    },
+                    "template_id": {
+                      "description": "Parent GMI Template identifier in the same IDC.",
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "template"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "template_id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "dockerfile": {
+                      "description": "Raw Dockerfile text. Supported instructions: FROM (exactly one; no\nmulti-stage), RUN, ENV, WORKDIR, USER, COPY/ADD, CMD/ENTRYPOINT;\nEXPOSE and VOLUME are skipped; anything else is rejected with 400.\n\nA trailing backslash continues an instruction on the next line; blank\nand comment lines inside a continuation are skipped.\n\nThe Dockerfile's final USER is the runtime identity of Sandboxes unless\n`default_user` is set. A Build fails when that account cannot enter the\nfinal working directory; declare an accessible WORKDIR.\n\nCOPY/ADD sources must reference an uploaded Template file as\n`COPY {{file:<file_id>}} /dest` — local paths and URLs are\nrejected, and at most one file may be referenced per build (its\n`file_id` must also be attached via `file_context`, with\n`file_context.destination` omitted).\n\nWith a dockerfile source, the sibling `commands` and `envs` fields\nare forbidden: write RUN/ENV lines in the Dockerfile instead.\nCMD/ENTRYPOINT are extracted into the Build's start command; an\nexplicit `start_cmd` takes precedence over them.\n\nENV values are visible to subsequent build steps and are part of\nthe sandbox runtime environment, as under `docker run`; a value\npassed as `env_vars` when creating a Sandbox overrides one of the\nsame name. Do not put build-time secrets in ENV: build the Template\nfrom an image or template source and pass them in `envs`, which\nreach the build steps only.\n",
+                      "maxLength": 262144,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "dockerfile"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "dockerfile"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "start_cmd": {
+              "description": "Launch command persisted with the Build and applied when Sandboxes\ncreated from this Template start.\n\nIt runs as a boot script before the sandbox's main process, and the\nsandbox only becomes ready once it returns, so the command must\nterminate. A foreground long-running command (`sleep infinity`, a\nserver started in the foreground) leaves the Sandbox stuck\ninitializing and every exec against it rejected.\n\nAppending `&` alone is not sufficient: a backgrounded process that\nstill holds the inherited stdout/stderr keeps boot blocked just the\nsame. Long-running processes must be backgrounded *and* detached\nfrom those streams, e.g.\n`my-server > /var/log/my-server.log 2>&1 &`.\n\nResume continues the saved processes without re-running this command.\n",
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "type": "object"
+        }
+      },
+      "returns_binary": false,
+      "security_scheme": "bearerAuth",
+      "server": "https://console.gmicloud.ai/api/v2",
+      "service": "sandbox",
+      "summary": "Start an existing Build"
     },
     {
       "cookie_parameters": [],
@@ -4507,7 +5868,7 @@
         "required": true,
         "schema": {
           "additionalProperties": false,
-          "description": "Mutable Template metadata patch. Omitted fields are left unchanged;\n`labels` replaces the stored map wholesale when provided.\n",
+          "description": "Template metadata patch. Omitted fields are left unchanged;\n`labels` replaces the stored map wholesale when provided.\n",
           "minProperties": 1,
           "properties": {
             "description": {
@@ -4542,5 +5903,5 @@
       "summary": "Update mutable Template metadata"
     }
   ],
-  "total": 93
+  "total": 108
 }

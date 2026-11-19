@@ -5,6 +5,107 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 From 1.0.0 the documented commands follow [Semantic Versioning](https://semver.org/).
 Areas listed as not verified are excluded from that promise.
 
+## [Unreleased]
+
+### Added
+
+- `gmi sandbox snapshots create|list|get|delete` to save a running sandbox's
+  filesystem and `gmi sandbox create --snapshot ID` to start a sandbox from it.
+  This answers issue #6. Snapshot waits poll every five seconds and report the
+  service's failure code and reason.
+- `gmi sandbox pause` and `gmi sandbox resume` with `--wait`. Resume accepts
+  `--timeout`. `gmi sandbox get` shows snapshot and pause fields when present.
+- 15 new generated API commands and MCP tools from the refreshed sandbox spec.
+  MCP counts are now 39 tools by default, 89 with writes and 102 with
+  destructive operations. Four tools accept `idempotency_key`.
+
+### Changed
+
+- `specs/sandbox_api.yaml` refreshed from GMI on 15 November 2026. The manifest
+  now has 108 operations. Existing sandbox operations changed only additively.
+- The three new shell operations use the sandbox data plane token and are not
+  exposed as MCP tools, like exec and files.
+
+### Not verified
+
+- Snapshots, pause, resume and every new generated operation are tested offline
+  only. None has been run against the live API. Snapshot pricing is not in the
+  spec and gmi does not estimate it.
+
+- A GitHub Actions workflow to build the service image, check health and access
+  control before pushing version tags to `ghcr.io/zkasuran/gmi` with the built-in
+  `GITHUB_TOKEN`. It never publishes a `latest` tag.
+- Offline workflow checks and GitHub Container Registry instructions for
+  AgentBox registration. The workflow has not run on GitHub yet. Registry push,
+  AgentBox registration and marketplace publication remain unverified.
+
+Verified on 1 November 2026: the workflow published `ghcr.io/zkasuran/gmi:v1.0.2` and `1.0.2` (same digest). The image pulls without credentials.
+
+## [1.0.2] - 2026-10-31
+
+### Added
+
+- A step by step guide, `docs/SAFE-AGENTS.md`, for running coding agents on GMI with read-only defaults, with outputs taken from live runs.
+- The GMI Clouder logo in the README, used with GMI's written permission. gmi remains a community project and not an official GMI product.
+
+### Changed
+
+- `gmi mcp config --client claude-code` prints the quote-free stdio command
+  first, the project `.mcp.json` block second and the POSIX-only `add-json`
+  command last. Both permission flags are carried into the server arguments.
+- Printed guidance explains inherited shell credentials and explicit forwarding
+  without printing environment values. README and MCP troubleshooting match it.
+- Package version and installer default tag are now 1.0.2 and `v1.0.2`.
+
+### Fixed
+
+- Windows quoting in the printed Claude Code command, reported by
+  @chinmayee5599 in [pull request 10](https://github.com/zkasuran/gmi/pull/10).
+  The error `Invalid configuration: : Invalid input` was reproduced on Linux
+  with mangled JSON quotes. The new quote-free form was verified on Linux
+  with Claude Code 2.1.316 using a stand-in server. Windows itself is still
+  unverified.
+
+### Verification
+
+- `pytest -q -m "not live and not live_media"` passed twice: 306 passed and
+  9 deselected on each run. No live API calls were made.
+- `python tools/gen_api.py --check` and `sh -n install.sh` passed.
+- `gmi --version` printed `gmi 1.0.2`. The Claude Code configuration command
+  passed offline checks for both permission flags and matching documentation.
+- Windows execution, GMI calls through Claude Code and installation from the
+  new tag remain unverified. The new tag has not been created.
+
+## [1.0.1] - 2026-10-25
+
+### Added
+
+- Optional `idempotency_key` argument for MCP operations accepting the
+  Idempotency-Key header, with validation and the key returned in result metadata.
+- `idempotency_key` column per tool in `gmi mcp tools --json` and a support count.
+- Troubleshooting guide from @Ali30mhi and Cursor check from @vidhusanv17.
+- Retry guidance and troubleshooting entries for PEP 668, Claude Code environment
+  variables and an unconfirmed Windows quoting report.
+
+### Changed
+
+- Write and destructive tool errors for network failures, timeouts and HTTP 5xx
+  responses warn that changes may have been made and recommend checking state.
+- Write tool descriptions explain retry limits. Failed sandbox run calls warn
+  about possible leftover sandboxes or templates.
+- Package version and installer default tag are now 1.0.1 and `v1.0.1`.
+
+### Not verified
+
+- Claude Code and Cursor MCP setups have not been run here.
+- Streamable HTTP transport, MCP resources and MCP prompts are not implemented.
+- `gmi serve` has not been deployed on the AgentBox marketplace. The Docker image
+  has only been built and run locally. Image push, GMI injecting the runtime key
+  and the marketplace wizard steps have not been done; gateway access control
+  remains unverified.
+- Cluster write operations remain unverified.
+- macOS and Windows have not been tested.
+
 ## [1.0.0] - 2026-10-25
 
 ### Added

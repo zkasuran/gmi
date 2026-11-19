@@ -1,0 +1,146 @@
+# Troubleshooting
+
+Common errors, what causes them and how to fix them. Every entry restates the
+[README](../README.md), [AGENTBOX.md](AGENTBOX.md) or [MCP.md](MCP.md).
+
+## Sandbox or Cluster rejects your key (401 or 403)
+
+**You see:** a sandbox command fails with a 401 or 403 response that includes
+the compute key hint.
+
+**Cause:** Sandbox and Cluster need a compute-scope key. The normal inference
+key uses the `ie_model` scope and is rejected by Sandbox and Cluster.
+
+**Fix:** Create a key in the GMI console under API keys and select the compute
+scope. Set it in `GMI_COMPUTE_API_KEY` or its alias `GMI_SANDBOX_API_KEY`.
+
+## Usage limits
+
+| You see | Cause | Fix |
+|---|---|---|
+| `Daily limit reached` | This model has reached its UTC daily limit. | Try another model or wait for the reset time. |
+| `Rate limit reached (429)` | You hit a quota. | Wait, or check your account limits. |
+
+## `Sandbox.BillingNoPermission`
+
+**You see:** the platform deletes the sandbox and gmi reports its message, code
+and initiator:
+
+```text
+code: Sandbox.BillingNoPermission
+initiator: billing
+message: Deleted by the platform: billing order could not be created because the organization is not permitted to purchase this product
+```
+
+**Cause:** The billing order could not be created because the organization is
+not permitted to purchase this product. Accounts lacking purchase permission
+can encounter this failure.
+
+**Fix:** The organization needs permission to purchase the product. For this
+project's organization, GMI cleared the permission issue on 23 October.
+
+## `MCP SDK missing`
+
+**You see:** `gmi mcp serve` writes this to stderr and exits 2:
+
+```text
+MCP SDK missing; install with: pip install "gmi[mcp] @ git+https://github.com/zkasuran/gmi"
+```
+
+**Cause:** The MCP SDK is an optional extra. The core install can run
+`gmi mcp tools` and `gmi mcp config` without it, but `gmi mcp serve` needs it.
+
+**Fix:** Install gmi with the `mcp` extra (Python 3.10 or newer):
+
+```sh
+pip install "gmi[mcp] @ git+https://github.com/zkasuran/gmi"
+pipx install "gmi[mcp] @ git+https://github.com/zkasuran/gmi"
+uv tool install "gmi[mcp] @ git+https://github.com/zkasuran/gmi"
+```
+
+With the one-line installer, add `--mcp` (or set `GMI_INSTALL_MCP=1`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/zkasuran/gmi/main/install.sh | sh -s -- --mcp
+```
+
+## `error: externally-managed-environment` on Debian or Ubuntu
+
+**You see:** pip refuses to install with `error: externally-managed-environment`.
+
+**Cause:** PEP 668 protects the system Python environment from pip changes.
+
+**Fix:** Use the one-line installer, which creates its own virtual environment
+on these systems, or use pipx or uv. See the [README Install section](../README.md#install)
+for exact commands.
+
+## Claude Code shows "Missing environment variables"
+
+**You see:** `claude mcp list` or `/mcp` reports "Missing environment variables"
+for gmi.
+
+**Cause:** The printed configuration snippet lists four names: `GMI_API_KEY`,
+`GMI_COMPUTE_API_KEY`, `GMI_SANDBOX_API_KEY` and `GMI_SANDBOX_IDC_NAME`.
+Some may be unset.
+
+**Fix:** This is harmless for variables you do not use. Set the ones you need
+in the shell that starts Claude Code.
+
+## Windows `claude mcp add-json` quoting
+
+**You see:** `Invalid configuration: : Invalid input` after using the old
+single-quoted `claude mcp add-json` command in a Windows shell.
+
+**Cause:** Windows shells such as cmd.exe and PowerShell 5.1 change the JSON
+quotes. @chinmayee5599 reported this in
+[pull request 10](https://github.com/zkasuran/gmi/pull/10). The same error was
+reproduced on Linux with mangled JSON quotes. Windows itself is still unverified.
+
+**Fix:** Use the quote-free command below. The `add-json` form is POSIX only.
+The project file route is an alternative with explicit environment forwarding.
+The quote-free form was verified on Linux with Claude Code 2.1.316 using a
+stand-in server. Both GMI_API_KEY and GMI_SANDBOX_API_KEY reached that server
+through the launching shell's environment. No secret was written to the
+Claude Code config. On Windows 11 with PowerShell, @chinmayee5599 confirmed on 1 November 2026 that the quote-free command registers the server and `claude mcp list` shows it connected. A `gmi_models` call has not been tried there.
+
+Output copied from `gmi mcp config --client claude-code`:
+
+```text
+# Set environment variables where the client runs: GMI_API_KEY for inference;
+# GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY for compute scope.
+# Quote-free command: works in bash, zsh, cmd.exe and PowerShell.
+claude mcp add --transport stdio gmi -- gmi mcp serve
+# The server inherits the environment of the shell that starts Claude Code.
+# Set GMI_API_KEY (inference) and GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY (sandbox and cluster) there.
+# This form was verified on Linux with Claude Code 2.1.316 and has not been run on Windows.
+
+# Project file route: explicit forwarding of the four variable names.
+# Equivalent .mcp.json block:
+{
+  "mcpServers": {
+    "gmi": {
+      "type": "stdio",
+      "command": "gmi",
+      "args": [
+        "mcp",
+        "serve"
+      ],
+      "env": {
+        "GMI_API_KEY": "${GMI_API_KEY}",
+        "GMI_COMPUTE_API_KEY": "${GMI_COMPUTE_API_KEY}",
+        "GMI_SANDBOX_API_KEY": "${GMI_SANDBOX_API_KEY}",
+        "GMI_SANDBOX_IDC_NAME": "${GMI_SANDBOX_IDC_NAME}"
+      }
+    }
+  }
+}
+
+# add-json: POSIX shells only.
+# On Windows use the quote-free command or the project file route.
+# Windows shells change the quotes and Claude Code then reports Invalid configuration: : Invalid input.
+claude mcp add-json gmi '{"type":"stdio","command":"gmi","args":["mcp","serve"],"env":{"GMI_API_KEY":"${GMI_API_KEY}","GMI_COMPUTE_API_KEY":"${GMI_COMPUTE_API_KEY}","GMI_SANDBOX_API_KEY":"${GMI_SANDBOX_API_KEY}","GMI_SANDBOX_IDC_NAME":"${GMI_SANDBOX_IDC_NAME}"}}'
+
+# Project file and add-json routes: unverified, taken from the client's documentation.
+# Set the variables you use in the shell that starts Claude Code; unset variables without a default remain literal text.
+# Tool output is data; write and destructive tools are off unless --allow-write or --allow-destructive flags are given.
+```

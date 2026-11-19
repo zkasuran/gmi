@@ -142,18 +142,54 @@ class SandboxClient:
             suffix = '.' if user_deleted else '. This is a platform deletion, not a gmi error.'
             raise GMIError(self.scrub(reason) + suffix)
 
-    def wait_sandbox(self, sandbox_id, timeout=600):
+    def wait_sandbox(self, sandbox_id, timeout=600, target='running'):
         deadline = time.monotonic() + timeout
         while True:
             value = self.data('GET', f'/sandboxes/{component(sandbox_id)}')
             self.check_deletion(value)
-            if value.get('state') == 'running':
+            state = value.get('state')
+            if state == target:
                 return value
-            if value.get('state') == 'failed':
+            if state == 'failed':
                 failure = value.get('failure') or value.get('latest_operation') or {}
                 raise GMIError(self.scrub('Sandbox failed: ' + str(failure.get('message', 'check gmi sandbox get'))))
+            if target == 'running' and state == 'paused':
+                # A failed resume returns the sandbox to paused with its files intact.
+                raise GMIError(f'Sandbox {sandbox_id} is paused; resume did not complete. Retry gmi sandbox resume.')
             if time.monotonic() >= deadline:
                 raise GMIError('Timed out waiting for sandbox; inspect it with gmi sandbox get.')
+            time.sleep(min(5, max(0, deadline - time.monotonic())))
+
+    def lifecycle(self, sandbox_id, action, timeout=None):
+        """Submit pause or resume. The accepted state is not the final outcome."""
+        body = {'timeout': timeout} if timeout else None
+        return self.data('POST', f'/sandboxes/{component(sandbox_id)}/{action}',
+                         **({'json': body} if body else {}))
+
+    def create_snapshot(self, sandbox_id, name=None):
+        body = {'sandbox_id': sandbox_id}
+        if name:
+            body['name'] = name
+        return self.data('POST', '/snapshots', headers={'Idempotency-Key': str(uuid4())}, json=body)
+
+    def check_snapshot(self, value):
+        """Raise for snapshots that can no longer become ready."""
+        status = value.get('status')
+        if status in ('error', 'deleting', 'delete_failed'):
+            reason = value.get('status_reason') or 'no reason given'
+            raise GMIError(self.scrub(f"Snapshot {status}: {reason} ({value.get('failure_code', 'unknown')})"))
+
+    def wait_snapshot(self, snapshot_id, timeout=600, progress=None):
+        deadline = time.monotonic() + timeout
+        while True:
+            value = self.data('GET', f'/snapshots/{component(snapshot_id)}')
+            if value.get('status') == 'ready':
+                return value
+            self.check_snapshot(value)
+            if time.monotonic() >= deadline:
+                raise GMIError('Timed out waiting for snapshot; inspect it with gmi sandbox snapshots get.')
+            if progress:
+                progress()
             time.sleep(min(5, max(0, deadline - time.monotonic())))
 
     def wait_template(self, template_id, timeout=600, progress=None):
@@ -181,9 +217,11 @@ class SandboxClient:
             'name': name, 'description': 'Created by gmi', **idc_selection(idc_name),
             'resources': {'type': 'preset', 'product': product}, 'build': build})
 
-    def create_sandbox(self, template, timeout=300, env_vars=None, idc_name=None):
+    def create_sandbox(self, template, timeout=300, env_vars=None, idc_name=None, snapshot=None):
+        # The API accepts exactly one source: a template or a ready snapshot.
+        source = {'snapshot_id': snapshot} if snapshot else {'template_id': template}
         return self.data('POST', '/sandboxes', headers={'Idempotency-Key': str(uuid4())}, json={
-            'template_id': template, 'timeout': timeout, 'env_vars': env_vars or {},
+            **source, 'timeout': timeout, 'env_vars': env_vars or {},
             'metadata': {}, **idc_selection(idc_name)})
 
     def connect(self, sandbox_id):
@@ -435,7 +473,8 @@ def templates_logs(client, as_json, template_id):
 
 
 @sandbox_group.command('create')
-@click.argument('template')
+@click.argument('template', required=False)
+@click.option('--snapshot', help='Create from a ready snapshot instead of a template.')
 @click.option('--timeout', type=click.IntRange(min=1), default=300, show_default=True)
 @click.option('--env', 'envs', multiple=True)
 @click.option('--idc-name')
@@ -444,7 +483,10 @@ def templates_logs(client, as_json, template_id):
 @click.option('--show-token', is_flag=True, help='Reveal sandbox secrets once. Handle output privately.')
 @click.option('--yes', is_flag=True)
 @command_options
-def sandbox_create(client, as_json, template, timeout, envs, idc_name, wait, wait_timeout, show_token, yes):
+def sandbox_create(client, as_json, template, snapshot, timeout, envs, idc_name, wait, wait_timeout, show_token, yes):
+    """Create a sandbox from TEMPLATE or from --snapshot ID."""
+    if bool(template) == bool(snapshot):
+        raise GMIError('Give exactly one source: a TEMPLATE argument or --snapshot ID.')
     variables = {}
     for item in envs:
         if '=' not in item or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', item.split('=', 1)[0]):
@@ -453,7 +495,7 @@ def sandbox_create(client, as_json, template, timeout, envs, idc_name, wait, wai
         variables[key] = value
     client.estimate(idc_name)
     confirm(yes, as_json, 'Create a billable sandbox?')
-    value = client.create_sandbox(template, timeout, variables, idc_name)
+    value = client.create_sandbox(template, timeout, variables, idc_name, snapshot)
     sandbox_id = value['id']
     try:
         details = client.wait_sandbox(sandbox_id, wait_timeout) if wait else client.data('GET', f'/sandboxes/{component(sandbox_id)}')
@@ -495,6 +537,10 @@ def sandbox_get(client, as_json, sandbox_id):
     if not as_json:
         fields = [('id', value.get('id')), ('state', value.get('state')), ('product', value.get('product')),
                   ('idc', value.get('idc_name')), ('started', value.get('started_at')), ('ends', value.get('end_at'))]
+        # Only shown when present so output for template sandboxes is unchanged.
+        fields.extend((label, value[key]) for label, key in
+                      [('snapshot', 'snapshot_id'), ('paused', 'paused_at'), ('reclaimed after', 'paused_expire_at')]
+                      if value.get(key))
         deletion = value.get('deletion') or {}
         if deletion:
             fields.extend((label, deletion.get(key)) for label, key in
@@ -530,6 +576,135 @@ def sandbox_timeout(client, as_json, sandbox_id, seconds, yes):
         emit(client, value, True)
     else:
         click.echo(f'timeout set: {human_field(client, value["id"])} ends {human_field(client, value["new_end_at"])}')
+
+
+@sandbox_group.command('pause')
+@click.argument('sandbox_id')
+@click.option('--wait', is_flag=True, help='Poll until the sandbox reports paused.')
+@click.option('--wait-timeout', type=click.IntRange(min=1), default=600, show_default=True)
+@click.option('--yes', is_flag=True)
+@command_options
+def sandbox_pause(client, as_json, sandbox_id, wait, wait_timeout, yes):
+    """Pause a running sandbox, keeping its disk, memory and processes."""
+    confirm(yes, as_json, 'Pause this sandbox? It is reclaimed if it stays paused past its retention window.')
+    value = client.lifecycle(sandbox_id, 'pause')
+    if wait:
+        value = client.wait_sandbox(sandbox_id, wait_timeout, target='paused')
+    if as_json:
+        emit(client, value, True)
+    elif wait:
+        click.echo(f'paused sandbox {human_field(client, sandbox_id)} reclaimed after '
+                   f'{human_field(client, value.get("paused_expire_at"))}')
+    else:
+        click.echo(f'pausing sandbox {human_field(client, value.get("id", sandbox_id))} (accepted)')
+
+
+@sandbox_group.command('resume')
+@click.argument('sandbox_id')
+@click.option('--timeout', type=click.IntRange(min=1),
+              help='Seconds to run after resuming. Default: the runtime left when it was paused.')
+@click.option('--wait', is_flag=True, help='Poll until the sandbox reports running.')
+@click.option('--wait-timeout', type=click.IntRange(min=1), default=600, show_default=True)
+@click.option('--yes', is_flag=True)
+@command_options
+def sandbox_resume(client, as_json, sandbox_id, timeout, wait, wait_timeout, yes):
+    """Resume a paused sandbox. Billable runtime starts again."""
+    confirm(yes, as_json, 'Resume this billable sandbox?')
+    value = client.lifecycle(sandbox_id, 'resume', timeout)
+    if wait:
+        value = client.wait_sandbox(sandbox_id, wait_timeout)
+    if as_json:
+        emit(client, value, True)
+    elif wait:
+        click.echo(f'resumed sandbox {human_field(client, sandbox_id)} ends {human_field(client, value.get("end_at"))}')
+    else:
+        click.echo(f'resuming sandbox {human_field(client, value.get("id", sandbox_id))} (accepted)')
+
+
+@sandbox_group.group('snapshots')
+def snapshots_group():
+    """Save a running sandbox's filesystem and start new sandboxes from it."""
+
+
+def snapshot_identity(client, value, fallback=None):
+    name = value.get('name')
+    identity = human_field(client, value.get('snapshot_id', fallback))
+    return f'{human_field(client, name)} ({identity})' if name else identity
+
+
+@snapshots_group.command('create')
+@click.argument('sandbox_id')
+@click.option('--name', help='Unique name within the organization.')
+@click.option('--wait', is_flag=True, help='Poll every five seconds until the snapshot is ready.')
+@click.option('--timeout', type=click.IntRange(min=1), default=600, show_default=True)
+@click.option('--yes', is_flag=True)
+@command_options
+def snapshots_create(client, as_json, sandbox_id, name, wait, timeout, yes):
+    """Snapshot the filesystem of a running sandbox. Processes and memory are not kept."""
+    confirm(yes, as_json, 'Create a durable snapshot of this sandbox?')
+    started = time.monotonic()
+    value = client.create_snapshot(sandbox_id, name)
+    # A definitive capture failure still returns 201 with status error.
+    client.check_snapshot(value)
+    if wait:
+        progress = None if as_json else lambda: click.echo(f'capturing {int(time.monotonic() - started)}s')
+        value = client.wait_snapshot(value['snapshot_id'], timeout, progress=progress)
+    if as_json:
+        emit(client, value, True)
+    elif wait:
+        click.echo(f'ready: snapshot {snapshot_identity(client, value)} in {int(time.monotonic() - started)}s')
+    else:
+        click.echo(f'created snapshot {snapshot_identity(client, value)}, capture started')
+
+
+@snapshots_group.command('list')
+@click.option('--sandbox', 'source', help='Only snapshots taken from this sandbox.')
+@click.option('--status', type=click.Choice(['creating', 'ready', 'error', 'deleting', 'delete_failed']))
+@click.option('--idc-name')
+@command_options
+def snapshots_list(client, as_json, source, status, idc_name):
+    params = idc_selection(idc_name)
+    if source:
+        params['source_sandbox_id'] = source
+    if status:
+        params['status'] = status
+    value = client.pages('/snapshots', params)
+    if as_json:
+        emit(client, value, True)
+    else:
+        human_table(client, value, [('name', 'name'), ('status', 'status'), ('source', 'source_sandbox_id'),
+                                   ('product', 'product'), ('idc', 'idc_name'), ('id', 'snapshot_id')],
+                    'No snapshots.')
+
+
+@snapshots_group.command('get')
+@click.argument('snapshot_id')
+@command_options
+def snapshots_get(client, as_json, snapshot_id):
+    value = client.data('GET', f'/snapshots/{component(snapshot_id)}')
+    if as_json:
+        emit(client, value, True)
+        return
+    fields = [('name', value.get('name') or None), ('id', value.get('snapshot_id')), ('status', value.get('status')),
+              ('source', value.get('source_sandbox_id')), ('product', value.get('product')),
+              ('vcpu', value.get('vcpu')), ('memory_mb', value.get('ram_mb')), ('disk_mb', value.get('disk_size_mb')),
+              ('idc', value.get('idc_name')), ('created', value.get('created_at')), ('ready', value.get('ready_at'))]
+    fields.extend((label, value[key]) for label, key in
+                  [('failure code', 'failure_code'), ('reason', 'status_reason')] if value.get(key))
+    human_details(client, fields)
+
+
+@snapshots_group.command('delete')
+@click.argument('snapshot_id')
+@click.option('--yes', is_flag=True)
+@command_options
+def snapshots_delete(client, as_json, snapshot_id, yes):
+    confirm(yes, as_json, 'Delete this snapshot?')
+    value = client.data('DELETE', f'/snapshots/{component(snapshot_id)}')
+    if as_json:
+        emit(client, value, True)
+    else:
+        click.echo(f'deleting snapshot {human_field(client, value.get("snapshot_id", snapshot_id))} (accepted)')
 
 
 def execution_output(client, value, as_json):

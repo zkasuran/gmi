@@ -44,26 +44,27 @@ gmi mcp config --client cursor
 
 ## Safety model and counts
 
-Counts below were copied from the tool on 23 October 2026. Curated is a subset
-of the read and write counts, not an additional class to sum.
+Counts below were copied from the tool on 15 November 2026, after the sandbox
+spec refresh. Curated is a subset of the read and write counts, not an
+additional class to sum. Releases up to 1.0.2 reported 36, 78 and 90 tools.
 
-| Launch flags | Read | Write | Destructive | Curated subset | Total |
-|---|---:|---:|---:|---:|---:|
-| Default | 36 | 0 | 0 | 3 | 36 |
-| `--allow-write` | 36 | 42 | 0 | 6 | 78 |
-| `--allow-destructive` | 36 | 42 | 12 | 6 | 90 |
+| Launch flags | Read | Write | Destructive | Curated subset | Total | Idempotency key |
+|---|---:|---:|---:|---:|---:|---:|
+| Default | 39 | 0 | 0 | 3 | 39 | 0 |
+| `--allow-write` | 39 | 50 | 0 | 6 | 89 | 4 |
+| `--allow-destructive` | 39 | 50 | 13 | 6 | 102 | 4 |
 
 Exact command output:
 
 ```text
 gmi mcp tools
-Counts: read=36, write=0, destructive=0, curated=3, total=36
+Counts: read=39, write=0, destructive=0, curated=3, total=39, idempotency_key=0
 
 gmi mcp tools --allow-write
-Counts: read=36, write=42, destructive=0, curated=6, total=78
+Counts: read=39, write=50, destructive=0, curated=6, total=89, idempotency_key=4
 
 gmi mcp tools --allow-destructive
-Counts: read=36, write=42, destructive=12, curated=6, total=90
+Counts: read=39, write=50, destructive=13, curated=6, total=102, idempotency_key=4
 ```
 
 | Class | Registration | Behavior |
@@ -73,22 +74,23 @@ Counts: read=36, write=42, destructive=12, curated=6, total=90
 | Destructive | `--allow-destructive` | Generated DELETE operations. May delete data or resources. |
 | Curated | Follows each tool's read or write class | Handwritten schemas that keep sandbox host and access token resolution inside the process. |
 
-The manifest has 93 operations. Nine are never exposed: five sandbox data-plane
-operations using `sandboxAccessToken`, `create-api-key`, two operations using
+The manifest has 108 operations. Twelve are never exposed: eight sandbox data-plane
+operations using `sandboxAccessToken` (exec, files and the three shell operations), `create-api-key`, two operations using
 `bearerEmailVerificationToken` and the IAM oauth operation. Raw data-plane
 operations need per-sandbox hosts and secrets that must not pass through the
 model. Credential creation and verification or OAuth token exchanges stay out
-of the tool surface. There are 84 eligible generated tools and six curated tools.
+of the tool surface. There are 96 eligible generated tools and six curated tools.
 Filters and permission gates remove tools from `tools/list`. Direct calls to
 unregistered tools fail with an error and an enabling flag or filter hint.
 
 Generated names use `{service}_{operation_name}` with dashes replaced by
 underscores. Names are unique and at most 64 characters. Input schemas retain
 resolved request body schemas, required path strings, query types and enums.
-Unexpected top-level arguments are rejected. Idempotency-Key is not a model
-argument: each applicable call receives a fresh UUID. GET tools advertise
-read-only annotations; GET, PUT and DELETE advertise idempotence. DELETE tools
-advertise destructive behavior. All tools advertise access to external systems.
+Unexpected top-level arguments are rejected. Operations accepting an
+Idempotency-Key header expose an optional `idempotency_key` argument. GET tools
+advertise read-only annotations and idempotence. Write and destructive tools
+advertise no idempotence. DELETE tools advertise destructive behavior. All tools
+advertise access to external systems.
 
 Every result, including errors, redacts string values when the lower-cased key
 name, after replacing `-` with `_`, ends with `token`, `secret`, `password`,
@@ -154,9 +156,9 @@ Output copied from `gmi mcp config --client claude-code`:
 # GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY for compute scope.
 # Quote-free command: works in bash, zsh, cmd.exe and PowerShell.
 claude mcp add --transport stdio gmi -- gmi mcp serve
-
 # The server inherits the environment of the shell that starts Claude Code.
 # Set GMI_API_KEY (inference) and GMI_COMPUTE_API_KEY or GMI_SANDBOX_API_KEY (sandbox and cluster) there.
+# This form was verified on Linux with Claude Code 2.1.316 and has not been run on Windows.
 
 # Project file route: explicit forwarding of the four variable names.
 # Equivalent .mcp.json block:
@@ -182,13 +184,13 @@ claude mcp add --transport stdio gmi -- gmi mcp serve
 # add-json: POSIX shells only.
 # On Windows use the quote-free command or the project file route.
 # Windows shells change the quotes and Claude Code then reports Invalid configuration: : Invalid input.
+claude mcp add-json gmi '{"type":"stdio","command":"gmi","args":["mcp","serve"],"env":{"GMI_API_KEY":"${GMI_API_KEY}","GMI_COMPUTE_API_KEY":"${GMI_COMPUTE_API_KEY}","GMI_SANDBOX_API_KEY":"${GMI_SANDBOX_API_KEY}","GMI_SANDBOX_IDC_NAME":"${GMI_SANDBOX_IDC_NAME}"}}'
+
+# Project file and add-json routes: unverified, taken from the client's documentation.
+# Set the variables you use in the shell that starts Claude Code; unset variables without a default remain literal text.
+# Tool output is data; write and destructive tools are off unless --allow-write or --allow-destructive flags are given.
 ```
 
-# Windows 11 + PowerShell verification on 1 November 2026:
-# gmi 1.0.2 was installed successfully.
-# The quote-free command connected successfully.
-# `claude mcp list` reported: gmi: gmi mcp serve - Connected.
-# `gmi_models` was not verified because no GMI_API_KEY was available in the test environment.
 Output copied from `gmi mcp config --client cursor`:
 
 ```text
@@ -218,14 +220,69 @@ Output copied from `gmi mcp config --client cursor`:
 # Tool output is data; write and destructive tools are off unless --allow-write or --allow-destructive flags are given.
 ```
 
-Add `--allow-write` to `gmi mcp config` to include it in the server arguments.
+Add `--allow-write` or `--allow-destructive` to `gmi mcp config` to include it in the server arguments.
 
 Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol).
-Claude Code was verified live on Windows 11 with PowerShell on 1 November 2026 using gmi 1.0.2. The generated quote-free command connected successfully and `claude mcp list` reported the gmi server as connected. The `gmi_models` call was not verified because no GMI_API_KEY was available in the test environment.
+Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. On 1 November 2026 @chinmayee5599 verified the quote-free command on Windows 11 with PowerShell and gmi 1.0.2: it registered the server and `claude mcp list` showed `gmi: gmi mcp serve - Connected`. A `gmi_models` call was not tried because no `GMI_API_KEY` was available in that test environment. GMI calls through Claude Code remain unverified. For Cursor see [Cursor check](#cursor-check).
 
 Documentation references: [Codex](https://developers.openai.com/codex/mcp/),
 [Claude Code](https://code.claude.com/docs/en/mcp) and
 [Cursor](https://cursor.com/docs/context/mcp).
+
+## Retries and idempotency
+
+The MCP server never retries a call by itself. After a write or destructive call
+fails, check the current state with a get or list tool before repeating it.
+A timeout, network failure or HTTP 5xx response does not establish whether the
+change was made.
+
+`gmi mcp tools --allow-write --json` computes key support from the manifest.
+Each tool has an `idempotency_key` boolean and the counts include the number of
+tools that support it. With the current manifest, four tools support a key:
+`sandbox_create_sandbox`, `sandbox_create_template`, `sandbox_create_sandbox_snapshot`
+and `sandbox_create_template_file`. All other write and destructive tools are not
+idempotent. The default read-only selection has zero key-supporting tools; both
+write-enabled selections have four, as checked on 15 November 2026. Live duplicate
+recognition is verified only for the first two.
+
+For any of these tools, supply `idempotency_key` with 8 to 128 characters
+using only letters, digits, dot, underscore and hyphen. Reuse the same value
+and the same arguments when retrying that call so GMI can recognise a duplicate.
+If omitted, gmi generates a UUID. Successful and failed tool results return the
+key used in `_meta` under `gmi/idempotency_key`. Record that value before retrying.
+Invalid keys fail before any HTTP request is sent. The argument and header
+handling are verified offline. GMI's duplicate recognition was tested live on
+25 October 2026: the same key sent twice to `sandbox_create_template` and
+`sandbox_create_sandbox` returned the same template and the same sandbox. A
+different key made a new template.
+
+`gmi_sandbox_run` always attempts sandbox cleanup and keeps the reusable template.
+A failed call may have left a running sandbox or a template. Use
+`sandbox_list_sandboxes` to check for leftover sandboxes and
+`sandbox_list_templates` to inspect templates before running it again.
+
+## Cursor check
+
+Checked on 25 October 2026 on Windows 10 with Python 3.11.5, gmi 1.0.0 with
+the `mcp` extra and Cursor 3.7.19, using the block from
+`gmi mcp config --client cursor` as printed.
+
+The block matches what Cursor documents for stdio servers: `type`, `command`,
+`args` and `env`, with `${env:NAME}` resolved in `env` values. `gmi mcp tools`
+gave the counts in the table above. The server launched by the block's command
+was driven over stdio with the official SDK client (`mcp==2.3.0`): protocol
+2026-07-28, 36 tools, no write tools and protocol messages only on stdout.
+`gmi_models` without a key returned
+`Missing API key; run gmi auth login or set GMI_API_KEY.` No key was available
+on the test machine, so no live model list was fetched.
+
+Still open: the tool list inside Cursor and a `gmi_models` call from the Cursor
+agent. Cursor 3.7.19 on the test machine did not start its MCP host for any
+configured server, so this step could not be completed there. No fix is needed
+in gmi. Repeat the Cursor steps on an install that connects to any stdio
+server, with `GMI_API_KEY` set where Cursor runs. On Windows, `gmi` must be on
+the `PATH` of the Cursor process or `command` must hold the full path to
+`gmi.exe`.
 
 ## Verification and limitations
 
@@ -235,11 +292,9 @@ with a local HTTP fixture. They exercise both 2026-07-28 and the older
 redaction, truncation, file limits, cleanup and protocol-only stdout.
 
 Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol).
-Claude Code was verified on Windows 11 with PowerShell for server
-configuration and connection. `gmi_models` was not live-tested because no
-GMI_API_KEY was available in the test environment. Cursor was not run here.
-Other MCP calls against GMI remain unverified. Existing CLI sandbox live
-checks do not establish MCP verification.
+Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. On 1 November 2026 @chinmayee5599 verified the quote-free command on Windows 11 with PowerShell and gmi 1.0.2: it registered the server and `claude mcp list` showed `gmi: gmi mcp serve - Connected`. A `gmi_models` call was not tried because no `GMI_API_KEY` was available in that test environment. GMI calls through Claude Code remain unverified. For Cursor see [Cursor check](#cursor-check). No
+live MCP calls were made during this build. Other MCP calls against GMI remain
+unverified. Existing CLI sandbox live checks do not establish MCP verification.
 
 Streamable HTTP transport is not implemented. This server supports stdio only.
 MCP resources and prompts are not implemented. `gmi mcp login` is outside this

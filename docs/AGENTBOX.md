@@ -161,6 +161,84 @@ inspect it and kill it when finished. Exec prints stdout and stderr and returns
 the command's exit code. Pending executions are polled until terminal with a
 600 second deadline. A standalone exec timeout does not cancel the remote job.
 
+## Snapshots, pause and resume
+
+GMI's sandbox spec was refreshed on 15 November 2026. It adds durable
+snapshots, pause and resume. These commands follow that spec and are covered by
+offline tests only. None of them has been run against the live API.
+
+A snapshot saves the filesystem of a running sandbox. Packages you install
+inside a sandbox are kept, so this is how to turn a configured sandbox into a
+reusable starting point (issue #6). Running processes and memory are not kept:
+a sandbox created from a snapshot boots fresh from the saved disk. The source
+sandbox keeps running. GMI exposes this through `/snapshots` and
+`POST /sandboxes` with `snapshot_id`, not through the template build source.
+Its spec marks snapshot-created templates as not rebuildable.
+
+Pause keeps the sandbox ID, disk, memory and processes. A paused sandbox does
+not use its runtime budget, but GMI reclaims it with its disk when the
+retention window `paused_expire_at` ends. Resume is the only way to wake it.
+It costs runtime again and needs a fresh `/connect`, which exec and file
+commands already do on every call.
+
+```sh
+gmi sandbox exec SANDBOX_ID -- sh -c 'apt-get update && apt-get install -y jq'
+gmi sandbox snapshots create SANDBOX_ID --name with-jq --wait --yes
+gmi sandbox snapshots list --sandbox SANDBOX_ID --status ready
+gmi sandbox snapshots get SNAPSHOT_ID
+gmi sandbox create --snapshot SNAPSHOT_ID --timeout 300 --wait --yes
+gmi sandbox snapshots delete SNAPSHOT_ID --yes
+
+gmi sandbox pause SANDBOX_ID --wait --yes
+gmi sandbox resume SANDBOX_ID --timeout 600 --wait --yes
+```
+
+Example output in the format the offline tests check. Elapsed times vary.
+
+```text
+$ gmi sandbox snapshots create SANDBOX_ID --name with-jq --wait --yes
+capturing 0s
+capturing 5s
+ready: snapshot with-jq (SNAPSHOT_ID) in 10s
+
+$ gmi sandbox snapshots create SANDBOX_ID --yes
+created snapshot SNAPSHOT_ID, capture started
+
+$ gmi sandbox snapshots delete SNAPSHOT_ID --yes
+deleting snapshot SNAPSHOT_ID (accepted)
+
+$ gmi sandbox pause box --yes
+pausing sandbox box (accepted)
+
+$ gmi sandbox pause box --wait --yes
+paused sandbox box reclaimed after 2026-11-22T10:01:00Z
+
+$ gmi sandbox resume box --wait --yes
+resumed sandbox box ends 2026-11-15T10:05:00Z
+```
+
+- `sandbox create` takes exactly one source: a `TEMPLATE` argument or
+  `--snapshot ID`. Giving both or neither fails before any request.
+- Snapshot waits poll every five seconds with a 600 second default deadline.
+  They stop on `ready` and fail on `error`, `deleting` or `delete_failed` with
+  the service's `status_reason` and `failure_code`. GMI can return a failed
+  snapshot directly from the create call. gmi reports that failure at once.
+- Each snapshot create sends a new `Idempotency-Key`. Snapshot names are unique
+  within the organization across all IDCs. A failed capture clears its name.
+- Snapshot deletion is asynchronous. A snapshot still used by a sandbox cannot
+  be deleted and GMI returns 409 `Snapshot.HasDependencies`.
+- Pause and resume return the accepted state, not the outcome. `--wait` polls
+  `GET /sandboxes/{id}` until `paused` or `running`. A failed resume returns the
+  sandbox to `paused` with its files intact. gmi reports that and exits 1.
+  A platform deletion during a wait stops at once, as for create.
+- `resume --timeout` replaces the remaining runtime. Without it the runtime left
+  at the moment of the pause is kept.
+- `sandbox get` adds `snapshot`, `paused` and `reclaimed after` lines only when
+  the service returns those fields.
+- Snapshot creation, deletion, pause and resume require confirmation. Use
+  `--yes` without a terminal or with `--json`. Snapshot storage pricing is not
+  in the spec and gmi does not estimate it.
+
 ## Known platform billing deletion
 
 On 22 October 2026 the owner observed every sandbox being deleted by the
@@ -241,8 +319,11 @@ docker build -t YOUR_REGISTRY/gmi-agentbox:day4 .
 docker push YOUR_REGISTRY/gmi-agentbox:day4
 ```
 
-The owner verified a local Docker build and run on 22 October. Registry push
-remains unverified. No registry credentials are available to this build.
+The owner verified a local Docker build and run on 22 October. A GitHub
+Actions workflow now publishes the image to `ghcr.io/zkasuran/gmi` (see the
+section on GitHub Container Registry below), so you do not need your own
+registry for the AgentBox registration. To use your own registry instead, run
+the two commands above.
 For a local container test, pass secrets through the runtime environment:
 
 ```sh
@@ -253,19 +334,57 @@ docker run --rm -p 8080:8080 \
 
 After the hackathon results are announced, gmi will be deployed on the AgentBox marketplace; until then the Docker image has only been built and run locally.
 
-## Marketplace wizard: five steps
+## Image on GitHub Container Registry
 
-The following values are a registration guide. The wizard and its current field
-labels have not been exercised here. Use the image you pushed and review each
-step in the console before submitting.
+The workflow in `.github/workflows/publish-image.yml` builds the repository
+Dockerfile and publishes the service image as `ghcr.io/zkasuran/gmi`. A push of
+a version tag matching `v*` triggers it. You can also run it manually from
+GitHub Actions with the required `ref` input set to an existing version tag
+such as `v1.0.2`. The workflow must be available on the default branch for
+manual dispatch. It checks out that tag and rejects refs that are not version
+tags. It uses only the built-in `GITHUB_TOKEN` for registry authentication.
 
-| Step | Values to enter |
+For `v1.0.2` it publishes both `ghcr.io/zkasuran/gmi:v1.0.2` and
+`ghcr.io/zkasuran/gmi:1.0.2`. It never publishes `latest`. Before any push, it
+builds and runs the image without API keys, checks `/health`, checks that
+unauthenticated `/chat` returns 401 and checks that logs contain no bearer
+authorization marker. The container is then stopped.
+
+Verified on 1 November 2026: the workflow ran on GitHub for `v1.0.2` and every
+step passed. Both tags point to the same image digest
+(`sha256:9acba766e30ed72400df3e0c9815be13c098b9334f8ad29358df8e69bb46d3ec`).
+A pull with no registry login worked, so GMI can pull it without credentials.
+The pulled image answers `/health`, returns 401 on `/chat` without the token,
+runs as the `gmi` user and reports `gmi 1.0.2`. It carries the OCI labels for
+source, license, version and description. It has not been registered on the
+AgentBox console and has not run there.
+
+Use these values for **Path A: Host on GMI** in the
+[AgentBox registration guide](https://docs.gmicloud.ai/agentbox-marketplace/register-an-agent):
+
+| Field | Value |
 |---|---|
-| 1. Agent details | Name: `gmi`. Description: `Chat with GMI Cloud models through a small HTTP service.` |
-| 2. Container image | Image: `YOUR_REGISTRY/gmi-agentbox:day4`. Startup command: image default `gmi serve`. |
-| 3. Networking | Container port: `8080`. Public HTTPS port: `443`. Health path: `/health`. Chat path: `/chat`. |
-| 4. MaaS integration | Enable MaaS integration. Let GMI inject `GMI_MAAS_BASE_URL` and `GMI_MAAS_API_KEY`. Models: start with `openai/gpt-6.1-sol` if available to the account. Set `GMI_MODELS` to that model or your selected list. Set `GMI_SERVE_TOKEN` as a runtime secret. |
-| 5. Review and submit | Check name, description, image, port mapping, MaaS integration and selected models. Test `/health` and an authenticated `/chat` after deployment. Request the Verified path only after live validation and GMI review. |
+| Project Name | `gmi` |
+| Image URL | `ghcr.io/zkasuran/gmi:1.0.2` (published and pullable). |
+| Requires sign-in | Off. The package pulls without credentials. |
+| Data Center and Specification | Choose an available data center and instance type **Sandbox SMALL**. |
+| Start Command | Leave empty to use the image default, `gmi serve`. |
+| Public Access | Use protocol **HTTPS/2** with external port **443**. |
+| Internal Port | `8080` |
+| Environment Variables | Add `GMI_SERVE_TOKEN` with type **SECRET** and a strong private value. Keep the auto-generated `GMI_MAAS_API_KEY` supplied by GMI. |
+
+`GMI_SERVE_TOKEN` protects `/chat` because the public address is reachable by
+anyone. Without it, callers can spend the deployed account's model credits.
+Clients must supply the matching bearer token. `/health` stays public. Never
+bake the service token or API keys into the image. `GMI_MAAS_API_KEY` is
+auto-generated by GMI and used by gmi for model calls; do not supply a personal
+API key in the image or registration instructions.
+
+Registering saves a template. Launching a sandbox and publishing a marketplace
+listing are separate steps. Registering and publishing are not done yet and
+have not been verified on the AgentBox console. After registration, launch a
+sandbox and verify `/health`, authenticated `/chat` and runtime key injection
+before requesting marketplace publication.
 
 Choose the **Verified** path for an agent hosted on AgentBox with MaaS integration,
 subject to GMI's review and current program requirements. This repository does

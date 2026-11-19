@@ -8,11 +8,11 @@ from pathlib import Path
 import re
 import tempfile
 
-from ..config import BUILTIN_DEFAULT_MODEL, GMIError
+from ..config import BUILTIN_DEFAULT_MODEL, GMIError, config_path
 
 
 def session_directory():
-    return Path.home() / ".config" / "gmi" / "sessions"
+    return config_path().parent / "sessions"
 
 
 def session_path(name):
