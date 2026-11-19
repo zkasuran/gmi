@@ -60,7 +60,7 @@ gmi mcp config --client codex
 
 Codex only passes the variables listed in `env_vars`, so set the keys in the shell that starts Codex.
 
-**Claude Code** (registration and connection checked on Linux with Claude Code 2.1.316; a tool call made by Claude Code itself and Windows are not checked):
+**Claude Code** (registration and connection checked on Linux with Claude Code 2.1.316 and on Windows 11 with PowerShell; a tool call made by Claude Code itself is not checked):
 
 ```sh
 claude mcp add --transport stdio gmi -- gmi mcp serve

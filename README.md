@@ -54,7 +54,7 @@ GMI Cloud has an OpenAI-compatible API, a Model Hub and a web console. `gmi` add
 - **Careful with your key.** Hidden prompt, verified before it is saved, stored with mode 600, never printed.
 
 > [!NOTE]
-> **Status: 1.0.2, Day 6 of a six-day public build (20 to 25 Oct 2026).** From 1.0.0 the documented commands follow semantic versioning. Areas marked as not verified are excluded from that promise. Days 1 to 3 include live API verification. The owner verified sandbox run, create, exec, file transfer, get, timeout and kill live on 23 October. The service image was built and run locally on 22 October. The MCP stdio server passes offline tests for both protocol eras; Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol). Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Cursor remain unverified. Claude Code on Windows has not been run. Marketplace deployment and Cluster writes remain unverified. See the [roadmap](#roadmap) for scope and verification limits.
+> **Status: 1.0.2, Day 6 of a six-day public build (20 to 25 Oct 2026).** From 1.0.0 the documented commands follow semantic versioning. Areas marked as not verified are excluded from that promise. Days 1 to 3 include live API verification. The owner verified sandbox run, create, exec, file transfer, get, timeout and kill live on 23 October. The service image was built and run locally on 22 October. The MCP stdio server passes offline tests for both protocol eras; Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol). Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Cursor remain unverified. Claude Code registration also worked on Windows 11 with PowerShell on 1 November 2026, reported by @chinmayee5599. Marketplace deployment and Cluster writes remain unverified. See the [roadmap](#roadmap) for scope and verification limits.
 
 ## Built in public with GMI Cloud
 
@@ -87,7 +87,7 @@ What the posts said about the results, including the limits:
 >
 > <sub>@gmi_cloud, 26 Oct 2026 | [post](https://x.com/gmi_cloud/status/2114562602068267514)</sub>
 
-> What is not proven: GMI calls through Claude Code and Cursor remain unverified. Claude Code registration was verified on Linux with version 2.1.316 using a stand-in server. Claude Code on Windows has not been run. gmi serve runs from a Docker image locally but is not on the AgentBox marketplace yet. On Windows the install and the offline test suite were run on 25 October 2026 (Windows 10, Python 3.11.5); the interactive session and live calls have not been run there. macOS is untested.
+> What is not proven: GMI calls through Claude Code and Cursor remain unverified. Claude Code registration was verified on Linux with version 2.1.316 using a stand-in server. Claude Code registration also worked on Windows 11 with PowerShell, reported by @chinmayee5599. gmi serve runs from a Docker image locally but is not on the AgentBox marketplace yet. On Windows the install and the offline test suite were run on 25 October 2026 (Windows 10, Python 3.11.5); the interactive session and live calls have not been run there. macOS is untested.
 >
 > <sub>@gmi_cloud, 26 Oct 2026 | [post](https://x.com/gmi_cloud/status/2114562603695694076)</sub>
 
@@ -813,7 +813,7 @@ Output copied from `gmi mcp config --client cursor`:
 Add `--allow-write` or `--allow-destructive` to `gmi mcp config` to include it in the server arguments.
 
 Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol).
-Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Cursor remain unverified. Claude Code on Windows has not been run.
+Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Cursor remain unverified. Claude Code registration also worked on Windows 11 with PowerShell on 1 November 2026, reported by @chinmayee5599.
 
 The MCP paths are tested offline with official SDK clients using both protocol
 eras. Streamable HTTP transport, MCP resources and MCP prompts are not
@@ -874,7 +874,7 @@ Built in public, one working piece a day. The rule: nothing gets announced until
 | 2 | Wed 21 Oct | `/image`, `/video` and `/audio` in the session, plus scriptable commands | **Shipped** |
 | 3 | Thu 22 Oct | Commands generated from GMI's four published OpenAPI specs | **Shipped** |
 | 4 | Fri 23 Oct | `gmi sandbox` and `gmi serve` | **Shipped: sandbox run, create, exec, put, get-file, get, timeout and kill verified live by the owner on 23 October.** The service image was built and run locally on 22 October. Marketplace deployment and Cluster writes unverified. |
-| 5 | Sat 24 Oct | `gmi mcp serve`: gated API and curated tools for agents | Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol). Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Cursor remain unverified. Claude Code on Windows has not been run. |
+| 5 | Sat 24 Oct | `gmi mcp serve`: gated API and curated tools for agents | Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol). Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Cursor remain unverified. Claude Code registration also worked on Windows 11 with PowerShell on 1 November 2026. |
 | 6 | Sun 25 Oct | 1.0.0 version and User-Agent updates, one-line installer, changelog, contribution guide and templates, README and agent contract updates | **Shipped** |
 
 After the hackathon results are announced, gmi will be deployed on the AgentBox marketplace; until then the Docker image has only been built and run locally.

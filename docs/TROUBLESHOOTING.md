@@ -101,7 +101,7 @@ The project file route is an alternative with explicit environment forwarding.
 The quote-free form was verified on Linux with Claude Code 2.1.316 using a
 stand-in server. Both GMI_API_KEY and GMI_SANDBOX_API_KEY reached that server
 through the launching shell's environment. No secret was written to the
-Claude Code config. This has not been run on Windows.
+Claude Code config. On Windows 11 with PowerShell, @chinmayee5599 confirmed on 1 November 2026 that the quote-free command registers the server and `claude mcp list` shows it connected. A `gmi_models` call has not been tried there.
 
 Output copied from `gmi mcp config --client claude-code`:
 

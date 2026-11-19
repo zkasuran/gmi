@@ -223,7 +223,7 @@ Output copied from `gmi mcp config --client cursor`:
 Add `--allow-write` or `--allow-destructive` to `gmi mcp config` to include it in the server arguments.
 
 Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol).
-Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Claude Code on Windows remain unverified. For Cursor see [Cursor check](#cursor-check).
+Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. On 1 November 2026 @chinmayee5599 verified the quote-free command on Windows 11 with PowerShell and gmi 1.0.2: it registered the server and `claude mcp list` showed `gmi: gmi mcp serve - Connected`. A `gmi_models` call was not tried because no `GMI_API_KEY` was available in that test environment. GMI calls through Claude Code remain unverified. For Cursor see [Cursor check](#cursor-check).
 
 Documentation references: [Codex](https://developers.openai.com/codex/mcp/),
 [Claude Code](https://code.claude.com/docs/en/mcp) and
@@ -292,7 +292,7 @@ with a local HTTP fixture. They exercise both 2026-07-28 and the older
 redaction, truncation, file limits, cleanup and protocol-only stdout.
 
 Codex verified live on 23 October 2026 (tools sandbox_list_templates and gmi_models called by Codex CLI 0.163.0 with model gpt-6.1-sol).
-Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. GMI calls through Claude Code and Claude Code on Windows remain unverified. For Cursor see [Cursor check](#cursor-check). No
+Claude Code registration was verified on Linux with Claude Code 2.1.316 using a stand-in server. On 1 November 2026 @chinmayee5599 verified the quote-free command on Windows 11 with PowerShell and gmi 1.0.2: it registered the server and `claude mcp list` showed `gmi: gmi mcp serve - Connected`. A `gmi_models` call was not tried because no `GMI_API_KEY` was available in that test environment. GMI calls through Claude Code remain unverified. For Cursor see [Cursor check](#cursor-check). No
 live MCP calls were made during this build. Other MCP calls against GMI remain
 unverified. Existing CLI sandbox live checks do not establish MCP verification.
 
