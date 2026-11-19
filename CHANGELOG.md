@@ -9,6 +9,9 @@ Areas listed as not verified are excluded from that promise.
 
 ### Added
 
+- `docs/ROADMAP.md`: the plan to grow gmi into a full terminal agent in
+  releases 1.1 to 1.6, with a feature parity checklist and target architecture.
+  The README and AGENTS.md link to it. This is a plan; nothing in it has shipped.
 - `gmi sandbox snapshots create|list|get|delete` to save a running sandbox's
   filesystem and `gmi sandbox create --snapshot ID` to start a sandbox from it.
   This answers issue #6. Snapshot waits poll every five seconds and report the

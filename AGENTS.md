@@ -259,6 +259,17 @@ what people see first and what the demos show.
 - From 1.0.0 documented commands follow semantic versioning. Areas marked as
   not verified are excluded from that promise. Preserve all existing limits.
 
+## Roadmap after 1.0 (project owner, 2026-11-19)
+
+gmi is becoming a full terminal agent for GMI Cloud.
+[docs/ROADMAP.md](docs/ROADMAP.md) is the plan: phases 1.1 to 1.6, the target
+architecture (`core/` engine and events, `tools/`, `tui/`, `headless.py`) and
+the "done when" check for each phase. Work in phase order unless the owner says
+otherwise. Keep the rules above: live verification, confirmation before writing,
+running or spending, and no keys in project files, tool output or sessions.
+Tick a roadmap box only when the item ships and is recorded in the changelog.
+Phase 3 starts only after phase 2 records which GMI models support tool calling.
+
 ## How to report back
 
 End every run with: what now works (exact commands), the test command and its result,

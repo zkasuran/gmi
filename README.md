@@ -866,6 +866,25 @@ Platforms: developed and tested on Linux. On Windows the install and the offline
 
 ## Roadmap
 
+### What's next
+
+gmi is growing from a CLI into a full terminal agent. It will read files, edit
+code and run commands with your approval, on your machine or inside a GMI sandbox, using any GMI model. The full
+plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
+
+| Release | Focus |
+|---|---|
+| 1.1 | Foundations: CI on three systems, PyPI, headless `gmi -p`, session resume, cost in dollars, `gmi doctor` |
+| 1.2 | Project context: `AGENTS.md` memory, `@file` mentions, `!shell`, `/compact`, model capability probes |
+| 1.3 | The agent: file and shell tools, permission modes, diffs, checkpoints and `/rewind` |
+| 1.4 | Sandbox agent: `gmi --sandbox` runs tools in AgentBox, cloud tools behind gates |
+| 1.5 | Extensibility: MCP client, custom slash commands, hooks, subagents, `gmi mcp login` |
+| 1.6 | Polish and reach: status line, themes, Windows installer, Homebrew, binaries, docs site |
+
+None of this has shipped yet. Each item moves to the changelog when it runs live.
+
+### The six-day build
+
 Built in public, one working piece a day. The rule: nothing gets announced until it runs.
 
 | Day | Date | What | Status |
